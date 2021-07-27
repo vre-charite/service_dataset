@@ -787,10 +787,14 @@ class APIImportData:
             # else we mark the folder as deleted
             else:
                 # update the relative path by remove `data` at begining
-                dff = ConfigClass.DATASET_FILE_FOLDER + "/"
+                dff = ConfigClass.DATASET_FILE_FOLDER
                 temp = ff_object.get("folder_relative_path")
-                frp = temp[:len(dff)].replace(dff, "") + temp[len(dff):]
-                deleted_files.append(frp+"/"+ff_object.get("name"))
+
+                # consider the root level delete will need to remove the data path at begining
+                frp = ""
+                if dff != temp:
+                    frp = temp[:len(dff)].replace(dff, "") + temp[len(dff):] + "/"
+                deleted_files.append(frp+ff_object.get("name"))
 
 
         # after all update the file number/total size/project geid
