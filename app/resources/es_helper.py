@@ -1,5 +1,8 @@
 import requests
 from ..config import ConfigClass
+from ..commons.logger_services.logger_factory_service import SrvLoggerFactory
+
+__logger = SrvLoggerFactory('es_helper').get_logger()
 
 
 def insert_one(es_type, es_index, data):
@@ -154,6 +157,7 @@ def search(es_index, page, page_size, data, sort_by=None, sort_type=None):
             {sort_by: sort_type}
         ]
     }
-
+    __logger.info("elastic search url: {}".format(url))
+    __logger.info("elastic search params: {}".format(str(search_params)))
     res = requests.get(url, json=search_params)
     return res.json()

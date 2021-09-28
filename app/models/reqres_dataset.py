@@ -66,6 +66,11 @@ class DatasetPutForm(BaseModel):
     activity: List[Activity]
 
 
+class DatasetVerifyForm(BaseModel):
+    dataset_geid: str
+    type: str
+
+
 class DatasetListForm(BaseModel):
     filter = {}
     order_by: str

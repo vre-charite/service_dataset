@@ -10,34 +10,27 @@ from minio.commonconfig import REPLACE, CopySource
 
 from minio.credentials.providers import ClientGrantsProvider
 
-
-class Minio_Client():
-
-    def __init__(self):
+class Minio_Client_():
+    def __init__(self, access_token, refresh_token):
+        # preset the tokens for refreshing
+        self.access_token = access_token
+        self.refresh_token = refresh_token
+        
         # retrieve credential provide with tokens
-        # c = self.get_provider()
+        c = self.get_provider()
 
-        # self.client = Minio(
-        #     ConfigClass.MINIO_ENDPOINT, 
-        #     credentials=c,
-        #     secure=ConfigClass.MINIO_HTTPS)
-
-        # Temperary use the credential
         self.client = Minio(
             ConfigClass.MINIO_ENDPOINT, 
-            access_key=ConfigClass.MINIO_ACCESS_KEY,
-            secret_key=ConfigClass.MINIO_SECRET_KEY,
+            credentials=c,
             secure=ConfigClass.MINIO_HTTPS)
 
 
     # function helps to get new token/refresh the token
     def _get_jwt(self):
-        username = "admin"
-        password = ConfigClass.MINIO_TEST_PASS
+        print("refresh token")
         payload = {
-            "grant_type":"password",
-            "username":username,
-            "password":password, 
+            "grant_type" : "refresh_token",
+            "refresh_token": self.refresh_token,
             "client_id":ConfigClass.MINIO_OPENID_CLIENT,
         }
         headers = {
@@ -46,8 +39,16 @@ class Minio_Client():
 
         # use http request to fetch from keycloak
         result = requests.post(ConfigClass.KEYCLOAK_URL+"/vre/auth/realms/vre/protocol/openid-connect/token", data=payload, headers=headers)
-        keycloak_access_token = result.json().get("access_token")
-        return result.json()
+        if result.status_code != 200:
+            raise Exception("Token refresh failed with "+str(result.json()))
+
+        self.access_token = result.json().get("access_token")
+        self.refresh_token = result.json().get("refresh_token")
+
+        jwt_object = result.json()
+        # print(jwt_object)
+
+        return jwt_object
 
     # use the function above to create a credential object in minio
     # it will use the jwt function to refresh token if token expired
@@ -61,6 +62,36 @@ class Minio_Client():
 
         return provider
 
+    def copy_object(self, bucket, obj, source_bucket, source_obj):
+        result = self.client.copy_object(
+            bucket,
+            obj,
+            CopySource(source_bucket, source_obj),
+        )
+        return result
+
+    def delete_object(self, bucket, obj):
+        result = self.client.remove_object(bucket, obj)
+        return result
+
+    # this will first call the copy api and delete the source
+    def move_object(self, bucket, obj, source_bucket, source_obj):
+        result = self.copy_object(bucket, obj, source_bucket, source_obj)
+        result = self.delete_object(source_bucket, source_obj)
+        return result
+
+
+
+class Minio_Client():
+
+    def __init__(self):
+
+        # Temperary use the credential
+        self.client = Minio(
+            ConfigClass.MINIO_ENDPOINT, 
+            access_key=ConfigClass.MINIO_ACCESS_KEY,
+            secret_key=ConfigClass.MINIO_SECRET_KEY,
+            secure=ConfigClass.MINIO_HTTPS)
     
     def copy_object(self, bucket, obj, source_bucket, source_obj):
         result = self.client.copy_object(

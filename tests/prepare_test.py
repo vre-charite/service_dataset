@@ -164,6 +164,15 @@ class SetupTest:
         res = self.app.post("/v1/dataset", json=payload)
         return res.json().get("result", {})
 
+    def add_file_to_dataset(self, file_id, dataset_id):
+        payload = {
+            "start_id": dataset_id,
+            "end_id": dataset_id,
+        }
+        response = requests.post(ConfigClass.NEO4J_SERVICE + "relations/own", json=payload)
+        self.log.info(f"Create relation response: {response.text}")
+
+
 ####################################################################################################
 
     def delete_test_project_and_files(self, project_name):
@@ -245,3 +254,31 @@ class SetupTest:
             "operator":"admin"
         }
         res = self.app.delete("/v1/dataset/%s/files"%(test_dataset_geid), json=payload)
+
+    def create_schema_template(self, dataset_geid):
+        payload = {
+            "name": "unittestschematemplate",
+            "standard": "test",
+            "system_defined": True,
+            "is_draft": True,
+            "content": {},
+            "creator": "admin", 
+        }
+        res = self.app.post(f"/v1/dataset/{dataset_geid}/schemaTPL", json=payload)
+        self.log.info(res.json())
+        return res.json()["result"]
+
+    def delete_schema_template(self, dataset_geid, template_geid):
+        res = self.app.delete(f"/v1/dataset/{dataset_geid}/schemaTPL/{template_geid}")
+        self.log.info(res.json())
+        return res.json()
+
+    def delete_schema(self, dataset_geid, template_geid):
+        payload = {
+            "username": "admin",
+            "dataset_geid": dataset_geid,
+            "activity": []
+        }
+        res = self.app.delete(f"/v1/schema/{template_geid}", json=payload)
+        self.log.info(res.json())
+        return res.json()

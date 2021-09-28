@@ -1,19 +1,28 @@
 import requests
-from fastapi import APIRouter, BackgroundTasks, Header, File, UploadFile, Form
+from fastapi import APIRouter, BackgroundTasks, Header, File, UploadFile, Form, \
+    Cookie
+from typing import Optional
 from fastapi_utils import cbv
 import json
+import time
+import uuid
 
 from ...models.import_data_model import ImportDataPost, DatasetFileDelete, \
-    DatasetFileMove, SrvDatasetFileMgr
+    DatasetFileMove, DatasetFileRename, SrvDatasetFileMgr
 from ...models.base_models import APIResponse, EAPIResponseCode
 from ...models.models_dataset import SrvDatasetMgr
+from ...commons.resource_lock import lock_resource, unlock_resource, check_lock
 
 from ...commons.logger_services.logger_factory_service import SrvLoggerFactory
 from ...commons.service_connection.minio_client import Minio_Client
 
 from ...resources.error_handler import catch_internal
+from ...resources.neo4j_helper import get_node_by_geid, get_parent_node, \
+    get_children_nodes, delete_relation_bw_nodes, delete_node, create_file_node, \
+    create_folder_node
 
 from ...config import ConfigClass
+
 
 
 router = APIRouter()
@@ -36,15 +45,20 @@ class APIImportData:
                  summary="API will recieve the file list from a project and \n\
                  Copy them under the dataset.")
     @catch_internal(_API_NAMESPACE)
-    async def import_dataset(self, dataset_geid, request_payload: ImportDataPost, background_tasks: BackgroundTasks):
+    async def import_dataset(self, dataset_geid, request_payload: ImportDataPost, \
+        background_tasks: BackgroundTasks, sessionId: Optional[str] = Cookie(None), \
+        Authorization: Optional[str] = Header(None), refresh_token: Optional[str] = Header(None)):
 
         import_list = request_payload.source_list
         oper = request_payload.operator
         source_project = request_payload.project_geid
+        session_id = sessionId
+        minio_access_token = Authorization
+        minio_refresh_token = refresh_token
         api_response = APIResponse()
 
         # if dataset not found return 404
-        dataset_obj = self.get_node_by_geid(dataset_geid, "Dataset")
+        dataset_obj = get_node_by_geid(dataset_geid, "Dataset")
         if dataset_obj == None:
             api_response.code = EAPIResponseCode.not_found
             api_response.error_msg = "Invalid geid for dataset"
@@ -59,6 +73,7 @@ class APIImportData:
             return api_response.json_response()
 
 
+        # TODO check if the file is from core?
         # check if file is from source project or exist
         # and check if file has been under the dataset
         import_list, wrong_file = self.validate_files_folders(import_list, source_project, "Container")
@@ -69,11 +84,10 @@ class APIImportData:
             "ignored": wrong_file + duplicate
         }
         
-
         # start the background job to copy the file one by one
         if len(import_list) > 0:
-            # import_list = [x.get("global_entity_id") for x in import_list]
-            background_tasks.add_task(self.copy_files_worker, import_list, dataset_obj, oper, source_project)
+            background_tasks.add_task(self.copy_files_worker, import_list, dataset_obj, oper, \
+                source_project, session_id, minio_access_token, minio_refresh_token)
 
         return api_response.json_response()
 
@@ -81,20 +95,23 @@ class APIImportData:
     @router.delete("/dataset/{dataset_geid}/files", tags=[_API_TAG], #, response_model=PreUploadResponse,
                  summary="API will delete file by geid from list")
     @catch_internal(_API_NAMESPACE)
-    async def delete_files(self, dataset_geid, request_payload: DatasetFileDelete, background_tasks: BackgroundTasks):
+    async def delete_files(self, dataset_geid, request_payload: DatasetFileDelete, \
+        background_tasks: BackgroundTasks, sessionId: Optional[str] = Cookie(None), \
+        Authorization: Optional[str] = Header(None), refresh_token: Optional[str] = Header(None)):
         
-        # TODO update file number + file size after deletion
-
         api_response = APIResponse()
+        session_id = sessionId
+        minio_access_token = Authorization
+        minio_refresh_token = refresh_token
 
         # validate the dataset if exists
-        dataset_obj = self.get_node_by_geid(dataset_geid, "Dataset")
+        dataset_obj = get_node_by_geid(dataset_geid, "Dataset")
         if dataset_obj == None:
             api_response.code = EAPIResponseCode.not_found
             api_response.error_msg = "Invalid geid for dataset"
             return api_response.json_response()
 
-        # validate the file IS from the dataset <===============================
+        # validate the file IS from the dataset 
         delete_list = request_payload.source_list
         delete_list, wrong_file = self.validate_files_folders(delete_list, dataset_geid, "Dataset")
         # fomutate the result
@@ -105,8 +122,8 @@ class APIImportData:
 
         # loop over the list and delete the file one by one
         if len(delete_list) > 0:
-            delete_list = [x.get("global_entity_id") for x in delete_list]
-            background_tasks.add_task(self.delete_files_work, delete_list, dataset_obj, request_payload.operator)
+            background_tasks.add_task(self.delete_files_work, delete_list, dataset_obj, \
+                request_payload.operator, session_id, minio_access_token, minio_refresh_token)
 
         return api_response.json_response()
 
@@ -121,13 +138,10 @@ class APIImportData:
         If folder_geid is not None, then it will treat the folder_geid
         as root and find the relative level 1 file/folder
         '''
-
-        # TBD check the folder is also under the dataset
-
         api_response = APIResponse()
 
         # validate the dataset if exists
-        dataset_obj = self.get_node_by_geid(dataset_geid, "Dataset")
+        dataset_obj = get_node_by_geid(dataset_geid, "Dataset")
         if dataset_obj == None:
             api_response.code = EAPIResponseCode.not_found
             api_response.error_msg = "Invalid geid for dataset"
@@ -174,13 +188,17 @@ class APIImportData:
     @router.post("/dataset/{dataset_geid}/files", tags=[_API_TAG], #, response_model=PreUploadResponse,
                  summary="API will move files within the dataset")
     @catch_internal(_API_NAMESPACE)
-    async def move_files(self, dataset_geid, request_payload: DatasetFileMove, background_tasks: BackgroundTasks):
-        # TBD check the folder is also under the dataset
+    async def move_files(self, dataset_geid, request_payload: DatasetFileMove, \
+        background_tasks: BackgroundTasks, sessionId: Optional[str] = Cookie(None), \
+        Authorization: Optional[str] = Header(None), refresh_token: Optional[str] = Header(None)):
 
         api_response = APIResponse()
+        session_id = sessionId
+        minio_access_token = Authorization
+        minio_refresh_token = refresh_token
 
         # validate the dataset if exists
-        dataset_obj = self.get_node_by_geid(dataset_geid, "Dataset")
+        dataset_obj = get_node_by_geid(dataset_geid, "Dataset")
         if dataset_obj == None:
             api_response.code = EAPIResponseCode.not_found
             api_response.error_msg = "Invalid geid for dataset"
@@ -195,7 +213,7 @@ class APIImportData:
             target_minio_path = ""
             root_label = "Dataset"
         else:
-            target_folder = self.get_node_by_geid(request_payload.target_geid, "Folder")
+            target_folder = get_node_by_geid(request_payload.target_geid, "Folder")
             if len(target_folder) == 0:
                 api_response.code = EAPIResponseCode.not_found
                 api_response.error_msg = "The target folder does not exist"
@@ -212,7 +230,7 @@ class APIImportData:
                 target_minio_path = target_folder.get('name')+'/'
             else:
                 target_minio_path = target_folder.get('folder_relative_path')+'/'+target_folder.get('name')+'/'
-        print(dataset_obj.get('code'), target_minio_path)
+        # print(dataset_obj.get('code'), target_minio_path)
 
         # validate the file if it is under the dataset
         move_list = request_payload.source_list
@@ -226,22 +244,73 @@ class APIImportData:
 
         # start the background job to copy the file one by one
         if len(move_list) > 0:
-            move_list = [x.get("global_entity_id") for x in move_list]
             background_tasks.add_task(self.move_file_worker, move_list, dataset_obj, 
-                request_payload.operator, target_folder, target_minio_path)
+                request_payload.operator, target_folder, target_minio_path, session_id,
+                minio_access_token, minio_refresh_token)
         
 
         return api_response.json_response()
 
 
 
-##################################################################################################################
-    
+    @router.post("/dataset/{dataset_geid}/files/{target_file}", tags=[_API_TAG],
+                 summary="API will update files within the dataset")
+    @catch_internal(_API_NAMESPACE)
+    async def rename_file(self, dataset_geid, target_file, request_payload: DatasetFileRename, \
+        background_tasks: BackgroundTasks, sessionId: Optional[str] = Cookie(None), \
+        Authorization: Optional[str] = Header(None), refresh_token: Optional[str] = Header(None)):
+
+        api_response = APIResponse()
+        session_id = sessionId
+        new_name = request_payload.new_name
+        minio_access_token = Authorization
+
+        # validate the dataset if exists
+        dataset_obj = get_node_by_geid(dataset_geid, "Dataset")
+        if dataset_obj == None:
+            api_response.code = EAPIResponseCode.not_found
+            api_response.error_msg = "Invalid geid for dataset"
+            return api_response.json_response()
+
+        # TODO filename check? regx
+
+        # validate the file IS from the dataset 
+        # rename to same name will be blocked
+        rename_list, wrong_file = self.validate_files_folders([target_file], dataset_geid, "Dataset")
+        # check if there is a file under the folder
+        parent_node = get_parent_node(get_node_by_geid(target_file))
+        pgeid = parent_node.get("global_entity_id")
+        root_label = parent_node.get("labels")[0]
+        duplicate, _ = self.remove_duplicate_file([{"name":new_name}], pgeid, root_label)
+
+        # cannot rename to self
+        if len(duplicate) > 0:
+             duplicate = rename_list
+             rename_list = []
+
+
+        # fomutate the result
+        api_response.result = {
+            "processing": rename_list,
+            "ignored": wrong_file+duplicate
+        }
+
+        # loop over the list and delete the file one by one
+        if len(rename_list) > 0:
+            background_tasks.add_task(self.rename_file_worker, rename_list, new_name, dataset_obj, \
+                request_payload.operator, session_id, minio_access_token, refresh_token)
+
+        return api_response.json_response()
+
+
+##########################################################################################################
+    #
     # the function will walk throught the list and validate
     # if the node is from correct root geid. for example:
     # - PUT: the imported files must from target project
     # - POST: the moved files must from correct dataset
     # - DELETE: the deleted file must from correct dataset
+    #
     # function will return two list: 
     # - passed_file is the validated file
     # - not_passed_file is not under the target node
@@ -253,7 +322,7 @@ class APIImportData:
         not_passed_file = []
         for ff in ff_list:
             # fetch the current node
-            current_node = self.get_node_by_geid(ff)
+            current_node = get_node_by_geid(ff)
             # if not exist skip the node
             if not current_node:
                 not_passed_file.append({
@@ -296,13 +365,9 @@ class APIImportData:
     # return True if duplicate else false
     def remove_duplicate_file(self, ff_list, root_geid, root_label):
 
-        # TODO make fetch at first
-
         duplic_file = []
         not_duplic_file = []
         for current_node in ff_list:
-            # fetch the current node
-            # current_node = self.get_node_by_geid(ff)
             # here we dont check if node is None since
             # the previous function already check it
 
@@ -311,11 +376,13 @@ class APIImportData:
                 "start_label": root_label,
                 "start_params": {"global_entity_id":root_geid},
                 "end_params": {
-                    "name":current_node.get("name", None),
+                    "name":current_node.get("name", None)
                 }
             }
 
-            response = requests.post(ConfigClass.NEO4J_SERVICE + "relations/query", json=relation_payload)
+            response = requests.post(ConfigClass.NEO4J_SERVICE + "relations/query", 
+                data=json.dumps(relation_payload).encode('utf-8'),
+                headers={"Content-Type": "application/json"})
             file_folder_nodes = response.json()
 
             # if there is no connect then the node is correct
@@ -328,230 +395,305 @@ class APIImportData:
 
         return duplic_file, not_duplic_file
 
-    
-    def get_node_by_geid(self, geid, label: str = None):
-
-        response = None
-        # since we have new api to directly fetch by label
-        if label:
-            payload = {
-                'global_entity_id': geid,
+    # TODO make it into the helper function
+    # match (n)-[r:own*]->(f) where n.global_entity_id="9ff8382d-f476-4cdf-a357-66c4babf8320-1626104650" delete 
+    # FOREACH(r), f
+    def send_notification(self, session_id, source_list, action, \
+        status, dataset_geid, operator, task_id, payload={}):
+        
+        url = ConfigClass.QUEUE_SERVICE + "broker/pub"
+        post_json = {
+            "event_type": "DATASET_FILE_NOTIFICATION",
+            "payload": {
+                "session_id":session_id,
+                "task_id": task_id,
+                "source":source_list,
+                "action":action,
+                "status":status,         # INIT/RUNNING/FINISH/ERROR
+                "dataset":dataset_geid, 
+                "operator":operator,
+                "payload":payload,
+                "update_timestamp": time.time()
+            },
+            "binary": True,
+            "queue": "socketio",
+            "routing_key": "socketio",
+            "exchange": {
+                "name": "socketio",
+                "type": "fanout"
             }
-            node_query_url = ConfigClass.NEO4J_SERVICE + "nodes/%s/query"%(label)
-            response = requests.post(node_query_url, json=payload)
-        else:
-            node_query_url = ConfigClass.NEO4J_SERVICE + "nodes/geid/%s"%(geid)
-            response = requests.get(node_query_url)
-
-        # here if we dont find any node then return None
-        if len(response.json()) == 0:
-            return None
-
-        return response.json()[0]
-
-
-    def get_parent_node(self, current_node):
-        # here we have to find the parent node and delete the relationship
-        relation_query_url = ConfigClass.NEO4J_SERVICE + "relations/query"
-        query_payload = {
-            "label": "own",
-            "end_label": current_node.get("labels")[0],
-            "end_params": {"id":current_node.get("id")}
         }
-        response = requests.post(relation_query_url, json=query_payload)
-        # print(response.json()[0])
-        parent_node_id = response.json()[0].get("start_node")
+        res = requests.post(url, json=post_json)
+        if res.status_code != 200:
+            raise Exception('send_notification() {}: {}'.format(res.status_code, res.text))
 
-        return parent_node_id
-
-    # # this function is kind of special in import(copy) worker, since
-    # # we are copy the node tree from project to dataset. The action will
-    # # need to use the unique attribute(like path) to find out the folder
-    # # node under the dataset by the path which is from the project file nodes
-    # def get_parent_node_by_path_under_dataset(self, relative_path, parent_name, dataset_code):
-    #     # note here we add the `data` subfolder so attach it to path
-    #     rp = ConfigClass.DATASET_FILE_FOLDER+"/"+relative_path if \
-    #         relative_path else ConfigClass.DATASET_FILE_FOLDER
-    #     payload = {
-    #         "folder_relative_path": rp,
-    #         "name": parent_name,
-    #         "dataset_code": dataset_code
-    #     }
-    #     node_query_url = ConfigClass.NEO4J_SERVICE + "nodes/Folder/query"
-    #     response = requests.post(node_query_url, json=payload)
-
-    #     if len(response.json()) == 0:
-    #         return None
-
-    #     return response.json()[0]
+        return res
 
     # 
-    def get_children_nodes(self, start_geid):
+    def create_job_status(self, session_id, source_file, action, \
+        status, dataset, operator, task_id, payload={}):
 
-        payload = {
-                "label": "own",
-                "start_label": "Folder",
-                "start_params": {"global_entity_id":start_geid},
-            }
+        # first send the notification
+        dataset_geid = dataset.get("global_entity_id")
+        dataset_code = dataset.get("code")
+        self.send_notification(session_id, source_file, action, status, dataset_geid, operator, task_id)
 
-        node_query_url = ConfigClass.NEO4J_SERVICE + "relations/query"
-        response = requests.post(node_query_url, json=payload)
-        ffs = [x.get("end_node") for x in response.json()]
-
-        return ffs
-
-
-    def delete_relation_bw_nodes(self, start_id, end_id):
-        # then delete the relationship between all the fils
-        relation_delete_url = ConfigClass.NEO4J_SERVICE + "relations"
-        delete_params = {
-            "start_id": start_id,
-            "end_id": end_id,
-        }
-        response = requests.delete(relation_delete_url, params=delete_params)
-        return response
-
-
-    def create_file_node(self, dataset_code, source_file, operator, parent_id, relative_path):
-        # fecth the geid from common service
-        geid = requests.get(ConfigClass.COMMON_SERVICE+"utility/id").json().get("result")
-        file_name = source_file.get("name")
-        # generate minio object path
-        fuf_path = relative_path+"/"+file_name
-        # # add the minio file subfolder 
-        # fuf_path = ConfigClass.DATASET_FILE_FOLDER+"/"+fuf_path
-
-        minio_http = ("https://" if ConfigClass.MINIO_HTTPS else "http://") + ConfigClass.MINIO_ENDPOINT
-        location = "minio://%s/%s/%s"%(minio_http, dataset_code, fuf_path)
-
-        # then copy the node under the dataset
-        file_attribute = {
-            "file_size": source_file.get("file_size", -1), # if the folder then it is -1
+        # also save to redis for display
+        source_geid = source_file.get("global_entity_id")
+        job_id = action+"-"+source_geid+"-"+str(int(time.time()))
+        task_url = ConfigClass.DATA_UTILITY_SERVICE + "tasks"
+        post_json = {
+            "session_id":session_id,
+            "label":"Dataset",
+            "source": source_geid,
+            "task_id": task_id,
+            "job_id": job_id,
+            "action":action,
+            "code": dataset_code,
+            "target_status": status,
             "operator": operator,
-            "name": file_name,
-            "global_entity_id": geid,
-            "location": location,
-            "dataset_code": dataset_code
+            "payload": source_file,
         }
+        res = requests.post(task_url, json=post_json)
+        if res.status_code != 200:
+            raise Exception('save redis error {}: {}'.format(res.status_code, res.text))
 
-        # print(location)
-
-        self.create_node_with_parent("File", file_attribute, parent_id)
-
-        # make minio copy
-        try:
-            mc = Minio_Client()
-            self.__logger.info("Minio Connection Success")
-
-            # minio location is minio://http://<end_point>/bucket/user/object_path
-            minio_path = source_file.get('location').split("//")[-1]
-            _, bucket, obj_path = tuple(minio_path.split("/", 2))
-
-            # print(bucket, obj_path)
-
-            mc.copy_object(dataset_code, fuf_path, bucket, obj_path)
-            self.__logger.info("Minio Copy Success")
-        except Exception as e:
-            self.__logger.error("error when uploading: "+str(e))
+        return {source_geid:job_id}
 
 
-    def create_folder_node(self, dataset_code, source_folder, operator, parent_node, relative_path):
+    def update_job_status(self, session_id, source_file, action, \
+        status, dataset, operator, task_id, job_id, payload={}):
 
-        # fecth the geid from common service
-        geid = requests.get(ConfigClass.COMMON_SERVICE+"utility/id").json().get("result")
-        folder_name = source_folder.get("name")
+        # first send the notification
+        dataset_geid = dataset.get("global_entity_id")
+        self.send_notification(session_id, source_file, action, status, dataset_geid, \
+            operator, task_id, payload)
 
-        # then copy the node under the dataset
-        folder_attribute = {
-            # "file_size": file_object.get("file_size", -1), # if the folder then it is -1
-            "create_by": operator,
-            "name": folder_name,
-            "global_entity_id": geid,
-            "folder_relative_path": relative_path,
-            "folder_level": parent_node.get("folder_level", -1)+1,
-            "dataset_code": dataset_code,
+        # also save to redis for display
+        task_url = ConfigClass.DATA_UTILITY_SERVICE + "tasks"
+        post_json = {
+            "session_id":session_id,
+            "label":"Dataset",
+            "task_id": task_id,
+            "job_id": job_id,
+            "status": status,
+            "add_payload":payload,
         }
+        res = requests.put(task_url, json=post_json)
+        if res.status_code != 200:
+            raise Exception('save redis error {}: {}'.format(res.status_code, res.text))
 
-        print(parent_node.get('id'))
-
-        folder_node, _ = self.create_node_with_parent("Folder", folder_attribute, parent_node.get('id'))
-
-        return folder_node, _
-
-    # this function will help to create a target node
-    # and connect to parent with "own" relationship
-    def create_node_with_parent(self, node_label, node_property, parent_id):
-        # print("Creating New Node")
-        # print(node_label, node_property, parent_id)
-
-        # create the node with following attribute
-        # - global_entity_id: unique identifier
-        # - create_by: who import the files
-        # - size: file size in byte (if it is a folder then size will be -1)
-        # - create_time: neo4j timeobject (API will create but not passed in api)
-        # - location: indicate the minio location as minio://http://<domain>/object
-        create_node_url = ConfigClass.NEO4J_SERVICE + 'nodes/' + node_label
-        response = requests.post(create_node_url, json=node_property)
-        new_node = response.json()[0]
-        # print(new_node)
-
-        # now create the relationship
-        # the parent can be two possible: 1.dataset 2.folder under it
-        create_node_url = ConfigClass.NEO4J_SERVICE + 'relations/own'
-        new_relation = requests.post(create_node_url, json={"start_id":parent_id, "end_id":new_node.get("id")})
-        # print(new_relation.json())
-
-        return new_node, new_relation
+        return res
 
 
-##########################################################################################################
-    def recursive_copy(self, currenct_nodes, dataset_code, oper, current_root_path, parent_node):
+    # the function will call the create_job_status to initialize
+    # the job status in the redis and prepare for update in copy/delete
+    # the function will return the job object include:
+    #   - session id: fetch from frontend
+    #   - task id: random generate for batch operation
+    #   - action: the file action name
+    #   - job id mapping: dictionary for tracking EACH file progress
+    def initialize_file_jobs(self, session_id, action, batch_list, dataset_obj, oper):
+        # use the dictionary to keep track the file action with
+        session_id = "local_test" if not session_id else session_id
+        # action = "dataset_file_import"
+        task_id = action+"-"+str(int(time.time()))
+        job_tracker = {
+            "session_id": session_id,
+            "task_id": task_id, 
+            "action": action,
+            "job_id":{}
+        }
+        for file_object in batch_list:
+            tracker = self.create_job_status(session_id, file_object, action, \
+                "INIT", dataset_obj, oper, task_id)
+            job_tracker["job_id"].update(tracker)
+
+        return job_tracker
+
+###########################################################################################
+
+    def recursive_copy(self, currenct_nodes, dataset, oper, current_root_path, \
+        parent_node, access_token, refresh_token, job_tracker=None, new_name=None):
+
         num_of_files = 0
         total_file_size = 0
+        # this variable DOESNOT contain the child nodes
+        new_lv1_nodes = []
 
         # copy the files under the project neo4j node to dataset node
         for ff_object in currenct_nodes:
+            ff_geid = ff_object.get("global_entity_id")
+            new_node = None
 
             # update here if the folder/file is archieved then skip
-            if ff_object.get("archived", True):
+            if ff_object.get("archived", False):
                 continue
 
-            # action filter by label
+            # here ONLY the first level file/folder will trigger the notification&job status
+            if job_tracker:
+                job_id = job_tracker["job_id"].get(ff_geid)
+                self.update_job_status(job_tracker["session_id"], ff_object, job_tracker["action"], \
+                    "RUNNING", dataset, oper, job_tracker["task_id"], job_id)
+            
+            ################################################################################################
+            # recursive logic below
+            
             if 'File' in ff_object.get("labels"):
-                # print("File", ff_object.get("name"))
+                # TODO simplify here
+                minio_path = ff_object.get('location').split("//")[-1]
+                _, bucket, old_path = tuple(minio_path.split("/", 2))
+                # lock the resource
+                lockkey_template = "{}/{}/{}"
+                old_lockkey = "{}/{}".format(bucket, old_path)
+                new_lockkey = lockkey_template.format(dataset.get("code"), \
+                    current_root_path, new_name if new_name else ff_object.get("name"))
+                
+                # try to aquire the lock for old path and lock the new resources
+                is_lock_approved = self.try_lock(old_lockkey)
+                lock_resource(new_lockkey)
+                if not is_lock_approved:
+                    if job_tracker:
+                        job_id = job_tracker["job_id"].get(ff_geid)
+                        self.update_job_status(job_tracker["session_id"], ff_object, job_tracker["action"], \
+                            "TERMINATED", dataset, oper, job_tracker["task_id"], job_id)
 
-                file_object = ff_object
-
-                self.create_file_node(dataset_code, file_object, oper, parent_node.get('id'), current_root_path) 
+                    self.__logger.warn("Resource %s has been used by other process"%old_lockkey)
+                    # terminate process and unlock the new
+                    unlock_resource(new_lockkey)
+                    return num_of_files, total_file_size
+                
+                # create the copied node
+                new_node, _ = create_file_node(dataset.get("code"), ff_object, oper, parent_node.get('id'), \
+                    current_root_path, access_token, refresh_token, new_name) 
                 # update for number and size
-                num_of_files += 1; total_file_size += file_object.get("file_size", 0)
+                num_of_files += 1; total_file_size += ff_object.get("file_size", 0)
+                new_lv1_nodes.append(new_node)
+                unlock_resource(old_lockkey)
+                unlock_resource(new_lockkey)
 
-            # else it is folder
+            # else it is folder will trigger the recursive
             elif 'Folder' in ff_object.get("labels"):
-                # print("Folder", ff_object.get("name"))
                 
                 # first create the folder
-                new_folder_node, _ = self.create_folder_node(dataset_code, ff_object, oper, parent_node, current_root_path)
+                new_node, _ = create_folder_node(dataset.get("code"), ff_object, oper, \
+                    parent_node, current_root_path, new_name)
+                new_lv1_nodes.append(new_node)
 
                 # seconds recursively go throught the folder/subfolder by same proccess
-                next_root = current_root_path+"/"+ff_object.get("name")
-                children_nodes = self.get_children_nodes(ff_object.get("global_entity_id"))
-                num_of_child_files, num_of_child_size = \
-                    self.recursive_copy(children_nodes, dataset_code, oper, next_root, new_folder_node)
+                # also if we want the folder to be renamed if new_name is not None
+                next_root = current_root_path+"/"+(new_name if new_name else ff_object.get("name"))
+                children_nodes = get_children_nodes(ff_geid)
+                num_of_child_files, num_of_child_size, _ = \
+                    self.recursive_copy(children_nodes, dataset, oper, next_root, new_node, \
+                        access_token, refresh_token)
 
                 # append the log together
                 num_of_files += num_of_child_files
                 total_file_size += num_of_child_size
+            ##########################################################################################################
+
+
+            # here after all use the geid to mark the job done for either first level folder/file
+            # if the geid is not in the tracker then it is child level ff. ignore them
+            if job_tracker:
+                job_id = job_tracker["job_id"].get(ff_geid)
+                self.update_job_status(job_tracker["session_id"], ff_object, job_tracker["action"], \
+                    "FINISH", dataset, oper, job_tracker["task_id"], job_id, payload=new_node)
+
+        return num_of_files, total_file_size, new_lv1_nodes
+
+
+    def recursive_delete(self, currenct_nodes, dataset, oper, parent_node, \
+        access_token, refresh_token, job_tracker=None):
+
+        num_of_files = 0
+        total_file_size = 0
+        deleted_lv1_node = []
+
+        # copy the files under the project neo4j node to dataset node
+        for ff_object in currenct_nodes:
+            ff_geid = ff_object.get("global_entity_id")
+
+            # update here if the folder/file is archieved then skip
+            if ff_object.get("archived", False):
+                continue
+
+            # here ONLY the first level file/folder will trigger the notification&job status
+            if job_tracker:
+                job_id = job_tracker["job_id"].get(ff_geid)
+                self.update_job_status(job_tracker["session_id"], ff_object, job_tracker["action"], \
+                    "RUNNING", dataset, oper, job_tracker["task_id"], job_id)
+            
+            ################################################################################################
+            # recursive logic below
+            if 'File' in ff_object.get("labels"):
+
+                # lock the resource
+                lockkey_template = "{}/{}"
+                # minio location is minio://http://<end_point>/bucket/user/object_path
+                minio_path = ff_object.get('location').split("//")[-1]
+                _, bucket, obj_path = tuple(minio_path.split("/", 2))
+                lockkey = lockkey_template.format(bucket, obj_path)
+                is_lock_approved = self.try_lock(lockkey)
+                if not is_lock_approved:
+                    if job_tracker:
+                        job_id = job_tracker["job_id"].get(ff_geid)
+                        self.update_job_status(job_tracker["session_id"], ff_object, job_tracker["action"], \
+                            "TERMINATED", dataset, oper, job_tracker["task_id"], job_id)
+                    self.__logger.warn("Resource %s has been used by other process"%lockkey)
+                    # terminate process
+                    return num_of_files, total_file_size
+
+                # for file we can just disconnect and delete
+                # TODO MOVE OUTSIDE <=============================================================
+                delete_relation_bw_nodes(parent_node.get("id"), ff_object.get("id"))
+                delete_node(ff_object, access_token, refresh_token)
+                # unlock resource
+                unlock_resource(lockkey)
+                # update for number and size
+                num_of_files += 1; total_file_size += ff_object.get("file_size", 0)
+
+            # else it is folder will trigger the recursive
+            elif 'Folder' in ff_object.get("labels"):
+                
+                # for folder, we have to disconnect all child node then
+                # disconnect it from parent
+                children_nodes = get_children_nodes(ff_object.get("global_entity_id"))
+                num_of_child_files, num_of_child_size = \
+                    self.recursive_delete(children_nodes, dataset, oper, ff_object, access_token, refresh_token)
+
+                # after the child has been deleted then we disconnect current node
+                delete_relation_bw_nodes(parent_node.get("id"), ff_object.get("id"))
+                delete_node(ff_object, access_token, refresh_token) 
+
+                # append the log together
+                num_of_files += num_of_child_files
+                total_file_size += num_of_child_size
+            ##########################################################################################
+
+            # here after all use the geid to mark the job done for either first level folder/file
+            # if the geid is not in the tracker then it is child level ff. ignore them
+            if job_tracker:
+                job_id = job_tracker["job_id"].get(ff_geid)
+                self.update_job_status(job_tracker["session_id"], ff_object, job_tracker["action"], \
+                    "FINISH", dataset, oper, job_tracker["task_id"], job_id)
 
         return num_of_files, total_file_size
-        
 
-    def copy_files_worker(self, import_list, dataset_obj, oper, source_project_geid):
+
+######################################################################################################
+
+    def copy_files_worker(self, import_list, dataset_obj, oper, source_project_geid, session_id, \
+        access_token, refresh_token):
+
+        action = "dataset_file_import"
+        job_tracker = self.initialize_file_jobs(session_id, action, import_list, dataset_obj, oper)
 
         # recursively go throught the folder level by level
         root_path = ConfigClass.DATASET_FILE_FOLDER
-        num_of_files, total_file_size = \
-            self.recursive_copy(import_list, dataset_obj.get("code"), oper, root_path, dataset_obj)
+        num_of_files, total_file_size, _ = self.recursive_copy(import_list, dataset_obj, \
+            oper, root_path, dataset_obj, access_token, refresh_token, job_tracker)
 
         # after all update the file number/total size/project geid
         srv_dataset = SrvDatasetMgr()
@@ -562,239 +704,99 @@ class APIImportData:
         }
         srv_dataset.update(dataset_obj, update_attribute, [])
 
-        # also update the message to service queue
+        # also update the log
         dataset_geid = dataset_obj.get("global_entity_id")
-        source_project = self.get_node_by_geid(source_project_geid)
+        source_project = get_node_by_geid(source_project_geid)
         import_logs = [source_project.get("code")+"/"+x.get("display_path") for x in import_list]
         SrvDatasetFileMgr().on_import_event(dataset_geid, oper, import_logs)
 
         return
 
 
-    def move_file_worker(self, move_list, dataset_obj, oper, target_folder, target_minio_path):
-
+    def move_file_worker(self, move_list, dataset_obj, oper, target_folder, target_minio_path, 
+        session_id, access_token, refresh_token):
+        
         dataset_geid = dataset_obj.get("global_entity_id")
+        action = "dataset_file_move"
+        job_tracker = self.initialize_file_jobs(session_id, action, move_list, dataset_obj, oper)
 
+
+        # minio move update the arribute
+        # find the parent node for path
+        parent_node = target_folder
+        parent_path = parent_node.get("folder_relative_path", None)
+        parent_path = parent_path+"/"+parent_node.get("name") if parent_path else ConfigClass.DATASET_FILE_FOLDER
+        # but note here the job tracker is not pass into the function
+        # we only let the delete to state the finish
+        _, _, _ = self.recursive_copy(move_list, dataset_obj, oper, parent_path, parent_node, \
+            access_token, refresh_token)
+
+
+        # delete the old one 
+        self.recursive_delete(move_list, dataset_obj, oper, parent_node, \
+            access_token, refresh_token, job_tracker=job_tracker)
+
+        # generate the activity log
+        dff = ConfigClass.DATASET_FILE_FOLDER+"/"
         for ff_geid in move_list:
-            ##############################################################
-            # step 1: for each of them delete parent connection
-            ##############################################################
+            if "File" in ff_geid.get("labels"):
+                # minio location is minio://http://<end_point>/bucket/user/object_path
+                minio_path = ff_geid.get('location').split("//")[-1]
+                _, bucket, old_path = tuple(minio_path.split("/", 2))
+                old_path = old_path.replace(dff, "", 1)
 
-            # get all connected files to validate it is a folder or file
-            # and the files will be used to take minio move later
-            node_query_url = ConfigClass.NEO4J_SERVICE + "relations/connected/"+ff_geid
-            response = requests.get(node_query_url, params={"direction":"output"})
-            files_under_folder = response.json().get("result", [])
-            # print(files_under_folder)
+                # format new path if the temp is None then the path is from
+                new_path = (target_minio_path+ff_geid.get("name")).replace(dff, "", 1)
 
-            # also get the parent node
-            response = requests.get(node_query_url, params={"direction":"input"})
-            parent_node = response.json().get("result", [])
-            # print(parent_node[0])
+            # else we mark the folder as deleted
+            else:
+                # update the relative path by remove `data` at begining
+                old_path = ff_geid.get("folder_relative_path")+"/"+ff_geid.get("name")
+                old_path = old_path.replace(dff, "", 1)
 
-
-            # get the current node 
-            ff_object = self.get_node_by_geid(ff_geid)
-            ff_label = ff_object.get("labels")[0]
-            # then remove the relationship
-            response = self.delete_relation_bw_nodes(parent_node[0].get("id"), ff_object.get("id"))
-
-            ##############################################################
-            # step 2: reconnect the node with target node
-            ##############################################################
-            # now create the relationship
-            # the parent can be two possible: 1.dataset 2.folder under it
-            create_relation_url = ConfigClass.NEO4J_SERVICE + 'relations/own'
-            payload = {"start_id":target_folder.get("id"), "end_id":ff_object.get("id")}
-            new_relation = requests.post(create_relation_url, json=payload)
-
-            # TODO
-            # also update the folder level relative path
-            log_path_old = ""; log_path_new = ""
-            if ff_label == "Folder":
-                update_attribute_url = ConfigClass.NEO4J_SERVICE + 'nodes/%s/node/%s'%(ff_label, ff_object.get("id"))
-                frp = target_folder.get("folder_relative_path")
-                log_path_old = ff_object.get("folder_relative_path")+'/'+ff_object.get("name")
-
-                frp = frp + "/" + target_folder.get("name") if frp else ConfigClass.DATASET_FILE_FOLDER
-                log_path_new = frp+'/'+ff_object.get("name")
-                payload = {
-                    "folder_level":target_folder.get("folder_level", -1) + 1, 
-                    "folder_relative_path":frp
-                }
-                res = requests.put(update_attribute_url, json=payload)
-                
-                dff = ConfigClass.DATASET_FILE_FOLDER + "/"
-                log_path_old = log_path_old[:len(dff)].replace(dff, "") + log_path_old[len(dff):]
-                log_path_new = log_path_new[:len(dff)].replace(dff, "") + log_path_new[len(dff):]
-                SrvDatasetFileMgr().on_move_event(dataset_geid, oper, log_path_old, log_path_new)
+                new_path = target_minio_path+ff_geid.get("name")
+                new_path = new_path.replace(dff, "", 1)
+            
+            # send to the es for logging
+            SrvDatasetFileMgr().on_move_event(dataset_geid, oper, old_path, new_path)
 
 
+    def delete_files_work(self, delete_list, dataset_obj, oper, session_id, access_token, \
+        refresh_token):
 
-            ##############################################################
-            # step 3: call minio api to move the files
-            ##############################################################
-            print("=================================================")
-            files_under_folder.append(ff_object)
-            for fuf in files_under_folder:
-                print()
-                print(fuf)
-
-                # TODO update to the recursive
-                if fuf.get("global_entity_id") in move_list and "Folder" in fuf.get("labels", []):
-                    continue
-
-                if "File" in fuf.get("labels", []):
-                    try:
-                        mc = Minio_Client()
-                        # self.__logger.info("Minio Connection Success")
-
-                        # formate the source location
-                        minio_path = fuf.get('location').split("//")[-1]
-                        # print(minio_path)
-                        _, bucket, obj_path = tuple(minio_path.split("/", 2))
-
-                        # get the parent of current fuf
-                        parent_fuf = self.get_parent_node(fuf)
-
-                        # also have to update the node attribute in neo4j
-                        # new_path = target_minio_path+fuf.get("name")
-                        new_path = parent_fuf.get("folder_relative_path")
-                        new_path = new_path+"/"+parent_fuf.get("name")+"/"+fuf.get("name") \
-                            if new_path else ConfigClass.DATASET_FILE_FOLDER+"/"+fuf.get("name")
-                        minio_http = ("https://" if ConfigClass.MINIO_HTTPS else "http://") + ConfigClass.MINIO_ENDPOINT
-                        new_location = "minio://%s/%s/%s"%(minio_http, dataset_obj.get('code'), new_path)
-                        res = requests.put(ConfigClass.NEO4J_SERVICE+"nodes/File/node/%s"%(fuf.get("id")), \
-                            data=('{"location":"%s"}'%(new_location)).encode('utf-8'), headers=HEADERS)
-
-                        print(obj_path, new_path)
-
-                        mc.move_object(
-                            dataset_obj.get('code'), 
-                            new_path,
-                            bucket,
-                            obj_path
-                        )
-                        # self.__logger.info("Minio Move Success")
-
-                        # also update the message to service queue and remove the subfolder in display
-                        if fuf.get("global_entity_id") in move_list:
-                            dff = ConfigClass.DATASET_FILE_FOLDER + "/"
-                            obj_path = obj_path[:len(dff)].replace(dff, "") + obj_path[len(dff):]
-                            new_path = new_path[:len(dff)].replace(dff, "") + new_path[len(dff):]
-                            SrvDatasetFileMgr().on_move_event(dataset_geid, oper, obj_path, new_path)
-
-                    except Exception as e:
-                        self.__logger.error("error when uploading: "+str(e))
-
-                elif "Folder" in fuf.get("labels", []):
-                    # then only update the relative path and folder level
-                    update_attribute_url = ConfigClass.NEO4J_SERVICE + 'nodes/Folder/node/%s'%(fuf.get("id"))
-                    # get the parent of current fuf
-                    parent_fuf = self.get_parent_node(fuf)
-                    payload = {
-                        "folder_level":parent_fuf.get("folder_level", -1) + 1, 
-                        "folder_relative_path":parent_fuf.get("folder_relative_path")+'/'+parent_fuf.get("name")
-                    }
-                    res = requests.put(update_attribute_url, json=payload)
-                    print(res.json())
-
-
-    def delete_files_work(self, delete_list, dataset_obj, oper):
-        num_of_files = 0
-        total_file_size = 0
         deleted_files = [] # for logging action
+        action = "dataset_file_delete"
+        job_tracker = self.initialize_file_jobs(session_id, action, delete_list, dataset_obj, oper)
 
+
+        num_of_files, total_file_size = self.recursive_delete(delete_list, dataset_obj, \
+            oper, dataset_obj, access_token, refresh_token, job_tracker)
+
+        # TODO try to embed with the notification&job status
+        # generate log path
         for ff_geid in delete_list:
-            # get all connected files
-            node_query_url = ConfigClass.NEO4J_SERVICE + "relations/connected/"+ff_geid
-            response = requests.get(node_query_url, params={"direction":"output"})
-            files_under_folder = response.json().get("result", [])
+            if "File" in ff_geid.get("labels"):
+                # minio location is minio://http://<end_point>/bucket/user/object_path
+                minio_path = ff_geid.get('location').split("//")[-1]
+                _, bucket, obj_path = tuple(minio_path.split("/", 2))
 
-            # first disconnect all the relationship
-            for fuf in files_under_folder:
-                
-                # here we have to find the parent node and delete the relationship
-                parent_node_id = self.get_parent_node(fuf).get("id")
-                # then delete the relationship between all the fils
-                response = self.delete_relation_bw_nodes(parent_node_id, fuf.get("id"))
-                # print(response.__dict__)
-
-
-            # then remove all the file/folder node + minio object
-            for fuf in files_under_folder:
-                node_label = fuf.get('labels')[0]
-                node_id = fuf.get('id')
-                node_delete_url = ConfigClass.NEO4J_SERVICE + "nodes/%s/node/%s"%(node_label, node_id)
-                response = requests.delete(node_delete_url)
-                # print(response.__dict__)
-
-                # delete the node if it is the file
-                if node_label == "File":
-                    try:
-                        mc = Minio_Client()
-                        self.__logger.info("Minio Connection Success")
-
-                        # minio location is minio://http://<end_point>/bucket/user/object_path
-                        minio_path = fuf.get('location').split("//")[-1]
-                        _, bucket, obj_path = tuple(minio_path.split("/", 2))
-
-                        mc.delete_object(bucket, obj_path)
-                        self.__logger.info("Minio Delete Success")
-
-                        # some metadata update
-                        num_of_files += 1; total_file_size += fuf.get("file_size", 0)
-                    except Exception as e:
-                        self.__logger.error("error when uploading: "+str(e))
-
-
-            ###########################################################
-            # delete the level 1 folder/file after all
-            ###########################################################
-
-            # fetch the current node
-            ff_object = self.get_node_by_geid(ff_geid)
-            ff_label = ff_object.get("labels")[0]
-
-            # then remove the relationship
-            response = self.delete_relation_bw_nodes(dataset_obj.get("id"), ff_object.get("id"))
-
-            # then delete the node itself
-            node_delete_url = ConfigClass.NEO4J_SERVICE + "nodes/%s/node/%s"%(ff_label, ff_object.get("id"))
-            response = requests.delete(node_delete_url)
-
-            # delete from minio if it is the file
-            if ff_label == "File":
-                try:
-                    mc = Minio_Client()
-                    self.__logger.info("Minio Connection Success")
-
-                    # minio location is minio://http://<end_point>/bucket/user/object_path
-                    minio_path = ff_object.get('location').split("//")[-1]
-                    _, bucket, obj_path = tuple(minio_path.split("/", 2))
-
-                    mc.delete_object(bucket, obj_path)
-                    self.__logger.info("Minio Delete Success")
-
-                    # update metadata
-                    num_of_files += 1; total_file_size += ff_object.get("file_size", 0)
-                    dff = ConfigClass.DATASET_FILE_FOLDER + "/"
-                    obj_path = obj_path[:len(dff)].replace(dff, "") + obj_path[len(dff):]
-                    deleted_files.append(obj_path)
-                except Exception as e:
-                    self.__logger.error("error when uploading: "+str(e))
+                # update metadata
+                dff = ConfigClass.DATASET_FILE_FOLDER + "/"
+                obj_path = obj_path[:len(dff)].replace(dff, "") + obj_path[len(dff):]
+                deleted_files.append(obj_path)
 
             # else we mark the folder as deleted
             else:
                 # update the relative path by remove `data` at begining
                 dff = ConfigClass.DATASET_FILE_FOLDER
-                temp = ff_object.get("folder_relative_path")
+                temp = ff_geid.get("folder_relative_path")
 
                 # consider the root level delete will need to remove the data path at begining
                 frp = ""
                 if dff != temp:
-                    frp = temp[:len(dff)].replace(dff, "") + temp[len(dff):] + "/"
-                deleted_files.append(frp+ff_object.get("name"))
+                    dff = dff + "/"
+                    frp = temp.replace(dff, "", 1)
+                deleted_files.append(frp+ff_geid.get("name"))
 
 
         # after all update the file number/total size/project geid
@@ -810,3 +812,59 @@ class APIImportData:
         SrvDatasetFileMgr().on_delete_event(dataset_geid, oper, deleted_files)
 
         return
+        
+
+    # the rename worker will reuse the recursive_copy&recursive_delete
+    # with only one file. the old_file is the node object and update
+    # attribute to new name
+    def rename_file_worker(self, old_file, new_name, dataset_obj, oper, session_id, \
+        access_token, refresh_token):
+
+        action = "dataset_file_rename"
+        job_tracker = self.initialize_file_jobs(session_id, action, old_file, dataset_obj, oper)
+        # since the renanme will be just one file set to the running now
+        job_id = job_tracker["job_id"].get(old_file[0].get("global_entity_id"))
+        self.update_job_status(job_tracker["session_id"], old_file[0], job_tracker["action"], \
+            "RUNNING", dataset_obj, oper, job_tracker["task_id"], job_id)
+
+
+        # minio move update the arribute
+        # find the parent node for path
+        parent_node = get_parent_node(old_file[0])
+        parent_path = parent_node.get("folder_relative_path", None)
+        parent_path = parent_path+"/"+parent_node.get("name") if parent_path else ConfigClass.DATASET_FILE_FOLDER
+        # same here the job tracker is not pass into the function
+        # we only let the delete to state the finish
+        _, _, new_nodes = self.recursive_copy(old_file, dataset_obj, oper, parent_path, parent_node, \
+            access_token, refresh_token, new_name=new_name)
+
+        # delete the old one
+        self.recursive_delete(old_file, dataset_obj, oper, parent_node, access_token, \
+            refresh_token)
+
+        # after deletion set the status using new node
+        self.update_job_status(job_tracker["session_id"], old_file[0], job_tracker["action"], \
+            "FINISH", dataset_obj, oper, job_tracker["task_id"], job_id, new_nodes[0])
+
+        # update es & log
+        dataset_geid = dataset_obj.get("global_entity_id")
+        old_file_name = old_file[0].get("name")
+        # remove the /data in begining ONLY once
+        frp = ""
+        if ConfigClass.DATASET_FILE_FOLDER != parent_path:
+            frp = parent_path.replace(ConfigClass.DATASET_FILE_FOLDER+"/",'', 1)+"/"
+        SrvDatasetFileMgr().on_rename_event(dataset_geid, oper, frp+old_file_name, frp+new_name)
+
+        return
+
+
+    # LOCK THE RESOURCE, IF return False, 
+    def try_lock(self, lock_key):
+        res_check_lock = check_lock(lock_key)
+        # print(res_check_lock.json())
+        if res_check_lock.status_code == 200:
+            lock_status = res_check_lock.json()['result']['status']
+            if lock_status == 'LOCKED':
+                return False
+        lock_resource(lock_key)
+        return True

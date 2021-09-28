@@ -31,6 +31,14 @@ class DatasetFileMove(BaseModel):
     target_geid: str
 
 
+class DatasetFileRename(BaseModel):
+    '''
+    the post request payload for dataset to move files
+    under the dataset
+    '''
+    new_name: str
+    operator: str
+
 ######################################################################
 class SrvDatasetFileMgr():
 
@@ -54,8 +62,8 @@ class SrvDatasetFileMgr():
             "queue": "dataset_actlog",
             "routing_key": "",
             "exchange": {
-            "name": "DATASET_ACTS",
-            "type": "fanout"
+                "name": "DATASET_ACTS",
+                "type": "fanout"
             }
         }
         res = requests.post(url, json=post_json)
@@ -81,8 +89,8 @@ class SrvDatasetFileMgr():
             "queue": "dataset_actlog",
             "routing_key": "",
             "exchange": {
-            "name": "DATASET_ACTS",
-            "type": "fanout"
+                "name": "DATASET_ACTS",
+                "type": "fanout"
             }
         }
         res = requests.post(url, json=post_json)
@@ -111,13 +119,41 @@ class SrvDatasetFileMgr():
             "queue": "dataset_actlog",
             "routing_key": "",
             "exchange": {
-            "name": "DATASET_ACTS",
-            "type": "fanout"
+                "name": "DATASET_ACTS",
+                "type": "fanout"
             }
         }
         res = requests.post(url, json=post_json)
         if res.status_code != 200:
             raise Exception('__on_move_event {}: {}'.format(res.status_code, res.text))
+        return res
+
+
+    def on_rename_event(self, geid, username, source, target):
+        url = ConfigClass.QUEUE_SERVICE + "broker/pub"
+        post_json = {
+            "event_type": "DATASET_FILE_RENAME_SUCCEED",
+            "payload": {
+                "dataset_geid": geid,
+                "act_geid": get_geid(),
+                "operator": username,
+                "action": "UPDATE",
+                "resource": "File",
+                "detail": {
+                    "from": source,
+                    "to": target
+                }
+            },
+            "queue": "dataset_actlog",
+            "routing_key": "",
+            "exchange": {
+                "name": "DATASET_ACTS",
+                "type": "fanout"
+            }
+        }
+        res = requests.post(url, json=post_json)
+        if res.status_code != 200:
+            raise Exception('on_rename_event {}: {}'.format(res.status_code, res.text))
         return res
 
 

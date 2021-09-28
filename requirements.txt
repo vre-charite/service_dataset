@@ -13,3 +13,8 @@ redis==3.5.3
 minio==7.0.3
 xmltodict==0.12.0
 pika==1.1.0
+FastAPI-SQLAlchemy==0.2.1
+psycopg2==2.8.6
+redis==3.5.3
+fastapi_sqlalchemy==0.2.1
+bids_validator==1.7.3

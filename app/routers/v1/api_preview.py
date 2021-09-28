@@ -1,11 +1,12 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Header
+from typing import Optional
 from fastapi.responses import StreamingResponse
 from fastapi_utils import cbv
 
 from app.commons.logger_services.logger_factory_service import SrvLoggerFactory
 from app.models.base_models import APIResponse, EAPIResponseCode
 from app.models.preview_model import PreviewResponse
-from app.commons.service_connection.minio_client import Minio_Client
+from app.commons.service_connection.minio_client import Minio_Client, Minio_Client_
 from app.config import ConfigClass
 from app.resources.error_handler import catch_internal
 import requests
@@ -22,7 +23,9 @@ class Preview:
     '''
     @router.get("/v1/{file_geid}/preview", tags=["preview"], response_model=PreviewResponse, summary="CSV/JSON/TSV File preview")
     @catch_internal("api_preview")
-    async def get_preview(self, file_geid):
+    async def get_preview(self, file_geid, Authorization: Optional[str] = Header(None), \
+        refresh_token: Optional[str] = Header(None)):
+
         logger.info('Get preview for: ' + str(file_geid))
         api_response = APIResponse()
 
@@ -34,15 +37,15 @@ class Preview:
             return api_response.json_response()
 
         result = {}
-        mc = Minio_Client()
+        mc = Minio_Client_(Authorization, refresh_token)
         file_data = self.parse_location(file_node["location"])
         file_type = file_node["name"].split(".")[1]
 
         response = mc.client.get_object(file_data["bucket"], file_data["path"], length=ConfigClass.MAX_PREVIEW_SIZE)
         if file_type in ["csv", "tsv"]:
-            result["content"] = self.parse_csv_response(response.data.decode())
+            result["content"] = self.parse_csv_response(response.data.decode('utf-8-sig'))
         else:
-            result["content"] = response.data.decode()
+            result["content"] = response.data.decode('utf-8-sig')
 
         if file_node["file_size"] >= ConfigClass.MAX_PREVIEW_SIZE:
             result["is_concatinated"] = True

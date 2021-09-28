@@ -1,9 +1,17 @@
 from ..config import ConfigClass
 from ..commons.logger_services.logger_factory_service import SrvLoggerFactory
 from ..commons.service_connection.minio_client import Minio_Client
+from ..commons.service_connection.dataset_policy_template import create_dataset_policy_template
+from app.models.schema_sql import session, DatasetSchemaTemplate, DatasetSchema
 from minio.sseconfig import Rule, SSEConfig
+from fastapi_sqlalchemy import db
 import requests
 import time
+import os
+import json
+
+ESSENTIALS_TPL_NAME = ConfigClass.ESSENTIALS_TPL_NAME
+ESSENTIALS_NAME = ConfigClass.ESSENTIALS_NAME
 
 class SrvDatasetMgr():
     '''
@@ -40,12 +48,37 @@ class SrvDatasetMgr():
             self.__link_user(node_created["id"], username)
             created_atlas = self.__create_atlas_node(node_created["global_entity_id"], username)
             event_created = self.__on_create_event(node_created["global_entity_id"], username)
+            created_essentials = self.__create_essentials(
+                node_created["global_entity_id"], code,
+                title, authors, type, modality, collection_method, license, description, tags,
+                username)
 
             # and also create minio bucket with the dataset code
             try:
                 mc = Minio_Client()
                 mc.client.make_bucket(code)
                 mc.client.set_bucket_encryption(code, SSEConfig(Rule.new_sse_s3_rule()))
+                
+                print("createing the policy")
+                # also use the lazy loading to create the policy in minio
+                stream = os.popen('mc admin policy info minio %s'%(username))
+                output = stream.read()
+                policy_file_name = None
+                try:
+                    policy = json.loads(output)
+                    # if there is a policy then we append the new to the resource
+                    policy["Statement"][0]["Resource"].append("arn:aws:s3:::%s/*"%(code))
+                    policy_file_name = create_dataset_policy_template(code, json.dumps(policy))
+                except json.decoder.JSONDecodeError:
+                    # if not found then we just create a new one for user
+                    policy_file_name = create_dataset_policy_template(code)
+
+                stream = os.popen('mc admin policy add minio %s %s'%(username, policy_file_name))
+                output = stream.read()
+                # then remove the policy file until the os is finish 
+                # otherwise there will be the racing issue
+                os.remove(policy_file_name) 
+
             except Exception as e:
                 self.logger.error("error when creating minio: "+str(e))
 
@@ -161,6 +194,51 @@ class SrvDatasetMgr():
         if res.status_code != 200:
             raise Exception('__create_atlas_node {}: {}'.format(res.status_code, res.text))
         return res
+
+    def __create_essentials(self, dataset_geid, code, title,
+        authors, type, modality, collection_method, license, description, tags, creator):
+        def get_essential_tpl() -> DatasetSchemaTemplate:
+            etpl_result = session.query(DatasetSchemaTemplate).\
+                filter(DatasetSchemaTemplate.name == ESSENTIALS_TPL_NAME).all()
+            if not etpl_result:
+                raise Exception("{} template not found in database.".format(ESSENTIALS_TPL_NAME))
+            etpl_result = etpl_result[0]
+            return etpl_result
+        etpl = get_essential_tpl()
+        model_data = {
+            "geid": get_geid(),
+            "name": ESSENTIALS_NAME,
+            "dataset_geid": dataset_geid,
+            "tpl_geid": etpl.geid,
+            "standard": etpl.standard,
+            "system_defined": etpl.system_defined,
+            "is_draft": False,
+            "content": {
+                "dataset_title": title,
+                "dataset_authors": authors,
+                "dataset_type": type,
+                "dataset_modality": modality,
+                "dataset_collection_method": collection_method,
+                "dataset_license": license,
+                "dataset_description": description,
+                "dataset_tags": tags,
+                "dataset_code": code
+            },
+            "creator": creator,
+        }
+        schema = DatasetSchema(**model_data)
+        schema = db_add_operation(schema)
+        return schema.to_dict()
+
+def db_add_operation(schema):
+    try:
+        db.session.add(schema)
+        db.session.commit()
+        db.session.refresh(schema)
+    except Exception as e:
+        error_msg = f"Psql Error: {str(e)}"
+        raise Exception(error_msg)
+    return schema
 
 
 def get_geid():
