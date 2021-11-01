@@ -73,15 +73,16 @@ class APIImportData:
             return api_response.json_response()
 
 
-        # TODO check if the file is from core?
         # check if file is from source project or exist
         # and check if file has been under the dataset
         import_list, wrong_file = self.validate_files_folders(import_list, source_project, "Container")
         duplicate, import_list = self.remove_duplicate_file(import_list, dataset_geid, "Dataset")
+        import_list, not_core_file = self.check_core_file(import_list)
+
         # fomutate the result
         api_response.result = {
             "processing": import_list,
-            "ignored": wrong_file + duplicate
+            "ignored": wrong_file + duplicate + not_core_file
         }
         
         # start the background job to copy the file one by one
@@ -310,16 +311,20 @@ class APIImportData:
     # - PUT: the imported files must from target project
     # - POST: the moved files must from correct dataset
     # - DELETE: the deleted file must from correct dataset
-    #
+    # 
+    ################################################################
     # function will return two list: 
     # - passed_file is the validated file
     # - not_passed_file is not under the target node
     def validate_files_folders(self, ff_list, root_geid, root_label):
 
-        # TODO handle if the geid does not exist
-
         passed_file = []
         not_passed_file = []
+        duplicate_in_batch_dict = {}
+        # this is to keep track the object in passed_file array
+        # and in the duplicate_in_batch_dict it will be {"geid": array_index}
+        # and this can help to trace back when duplicate occur
+        array_index = 0
         for ff in ff_list:
             # fetch the current node
             current_node = get_node_by_geid(ff)
@@ -350,15 +355,54 @@ class APIImportData:
                     "global_entity_id": ff,
                     "feedback": "unauthorized"
                 })
+
             else:
-                # also update a feedback as exists
-                node_detail = current_node
-                node_detail.update({"feedback": "exist"})
-                passed_file.append(node_detail)
+                exist_index = duplicate_in_batch_dict.get(current_node.get("name"), None)
+                # if we have process the file with same name in the same BATCH
+                # we will try to update name for ALL duplicate file into display_path
+                if exist_index is not None:
+                    current_node.update({
+                        "feedback": "duplicate in same batch, update the name",
+                        "name": current_node.get("display_path").replace('/', "_"),
+                    })
+
+                    # if the first node is not updated then use the index to trace back
+                    if exist_index != -1:
+                        passed_file[exist_index].update({
+                            "name": passed_file[exist_index].get("display_path").replace('/', "_"),
+                            "feedback": "duplicate in same batch, update the name",
+                        })
+
+                        # and mark the first one 
+                        first_geid = passed_file[exist_index].get("global_entity_id")
+                        duplicate_in_batch_dict.update({first_geid: -1})
+
+                # else we just record the file for next checking
+                else:
+                    current_node.update({"feedback": "exist"})
+                    duplicate_in_batch_dict.update({current_node.get("name"): array_index})
+
+                passed_file.append(current_node)
+                array_index += 1
 
 
         return passed_file, not_passed_file
     
+
+    # the function will check if the file IS from core
+    # and will block other files(greenroom, trashfile...)
+    def check_core_file(self, ff_list):
+        core_file = []
+        not_core_file = []
+        for current_node in ff_list:
+            if "VRECore" not in current_node.get("labels", []):
+                current_node.update({"feedback":"not core file"})
+                not_core_file.append(current_node)
+            else:
+                core_file.append(current_node)
+
+        return core_file, not_core_file
+
 
     # the function will reuse the <validate_files_folders> to check 
     # if the file already exist directly under the root node

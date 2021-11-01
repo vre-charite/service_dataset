@@ -1,38 +1,38 @@
-2021-08-10 14:52:24 INFO     
+2021-09-28 17:15:20 INFO     
 
-2021-08-10 14:52:24 INFO     Creating testing file-----------------------------------------------------------
-2021-08-10 14:52:25 INFO     RESPONSE DATA: [{"id": 30985, "labels": ["File"], "name": "version_unittest.csv", "time_created": "2021-08-10T18:52:27", "time_lastmodified": "2021-08-10T18:52:27", "operator": "admin", "location": "minio://http://10.3.7.220/version_unit_test/version_unittest.csv", "file_size": 1000, "dataset_code": "version_unit_test", "global_entity_id": "version_unittest1"}]
+2021-09-28 17:15:20 INFO     Creating testing file-----------------------------------------------------------
+2021-09-28 17:15:20 INFO     RESPONSE DATA: [{"id": 46676, "labels": ["File"], "name": "version_unittest.csv", "time_created": "2021-09-28T21:15:24", "time_lastmodified": "2021-09-28T21:15:24", "operator": "admin", "location": "minio://http://10.3.7.220/version_unit_test/version_unittest.csv", "file_size": 1000, "dataset_code": "version_unit_test", "global_entity_id": "version_unittest1"}]
 
-2021-08-10 14:52:25 INFO     RESPONSE STATUS: 200
-2021-08-10 14:52:25 INFO     Create relation response: "Error cannot add yourself as parent/child"
+2021-09-28 17:15:20 INFO     RESPONSE STATUS: 200
+2021-09-28 17:15:20 INFO     Create relation response: "Error cannot add yourself as parent/child"
 
-2021-08-10 14:52:25 INFO     
+2021-09-28 17:15:20 INFO     
 
-2021-08-10 14:52:25 INFO     ----------------------------01 test publish_project-----------------------------
-2021-08-10 14:52:26 INFO     
+2021-09-28 17:15:20 INFO     ----------------------------01 test publish_project-----------------------------
+2021-09-28 17:15:21 INFO     
 
-2021-08-10 14:52:26 INFO     ----------------------------01 test publish_project-----------------------------
-2021-08-10 14:52:26 INFO     
+2021-09-28 17:15:21 INFO     ----------------------------01 test publish_project-----------------------------
+2021-09-28 17:15:21 INFO     
 
-2021-08-10 14:52:26 INFO     ----------------------------03 test publish_project-----------------------------
-2021-08-10 14:52:26 INFO     
+2021-09-28 17:15:21 INFO     ----------------------------03 test publish_project-----------------------------
+2021-09-28 17:15:21 INFO     
 
-2021-08-10 14:52:26 INFO     ----------------------------03 test publish_project-----------------------------
-2021-08-10 14:52:27 INFO     
+2021-09-28 17:15:21 INFO     ----------------------------03 test publish_project-----------------------------
+2021-09-28 17:15:22 INFO     
 
-2021-08-10 14:52:27 INFO     ------------------------------05 test version_list------------------------------
-2021-08-10 14:52:27 INFO     
+2021-09-28 17:15:22 INFO     ------------------------------05 test version_list------------------------------
+2021-09-28 17:15:22 INFO     
 
-2021-08-10 14:52:27 INFO     --------------------------------06 test download--------------------------------
-2021-08-10 14:52:27 INFO     
+2021-09-28 17:15:22 INFO     --------------------------------06 test download--------------------------------
+2021-09-28 17:15:22 INFO     
 
-2021-08-10 14:52:27 INFO     ----------------------------07 test publish_project-----------------------------
-2021-08-10 14:52:28 INFO     
+2021-09-28 17:15:22 INFO     ----------------------------07 test publish_project-----------------------------
+2021-09-28 17:15:22 INFO     
 
-2021-08-10 14:52:28 INFO     START TEAR DOWN PROCESS
-2021-08-10 14:52:28 INFO     
+2021-09-28 17:15:22 INFO     START TEAR DOWN PROCESS
+2021-09-28 17:15:22 INFO     
 
-2021-08-10 14:52:28 INFO     Preparing delete file node------------------------------------------------------
-2021-08-10 14:52:28 INFO     DELETE STATUS: 200
-2021-08-10 14:52:28 INFO     DELETE RESPONSE: "success"
+2021-09-28 17:15:22 INFO     Preparing delete file node------------------------------------------------------
+2021-09-28 17:15:23 INFO     DELETE STATUS: 200
+2021-09-28 17:15:23 INFO     DELETE RESPONSE: "success"
 

@@ -57,11 +57,10 @@ class DatasetRestful:
         post_dict = request_payload.dict()
         for k, v in post_dict.items():
             if v != None:
+                # use the factory to get the validator function
                 validator = DatasetValidator.get(k)
                 validation = validator(v)
-                if validation:
-                    pass
-                else:
+                if not validation:
                     res.code = EAPIResponseCode.bad_request
                     res.result = None
                     res.error_msg = "Invalid {}".format(k)

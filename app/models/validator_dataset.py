@@ -16,42 +16,55 @@ class DatasetValidator:
 
     @staticmethod
     def code(value: str):
-        validated = True
         if any(ele.isupper() for ele in value):
-            validated = False
+            return False
         if not value.isalnum():
-            validated = False
+            return False
         if " " in value:
-            validated = False
+            return False
         if len(value) > 32:
-            validated = False
-        return validated
+            return False
+        return True
 
     @staticmethod
     def title(value):
-        validated = True
         if len(value) > 100:
-            validated = False
-        return validated
+            return False
+        return True
 
     @staticmethod
     def authors(value):
-        validated = True
+
+        # 1. type validation
         if not isinstance(value, list):
             print(value)
-            validated = False
+            return False
+
+        # 2. non-duplicate validtion
         if len(set(value)) != len(value):
-            validated = False
+            return False
+
+        # 3. each of collection cannot be empty
+        # AND the length should be less or equal than 20
+        # AND the type of each authors should be string
+        for val in value:
+            if " " in val:
+                return False
+            elif len(val) > 50:
+                return False
+            elif type(val) != str:
+                return False
+
+        # 4. total number of authors should be less or equal than 10
         if len(value) > 10:
-            validated = False
-        return validated
+            return False
+        return True
 
     @staticmethod
     def desc(value):
-        validated = True
         if len(value) > 5000:
-            validated = False
-        return validated
+            return False
+        return True
 
     @staticmethod
     def modality(value: list):
@@ -73,51 +86,68 @@ class DatasetValidator:
             "cell counting",
             "cell population characterization",
             "computational modeling"]
-        validated = True
+            
         for e in value:
             if e not in allowed:
-                validated = False
-        return validated
+                return False
+        return True
 
     @staticmethod
     def type(value):
         allowed = ["GENERAL", "BIDS"]
-        validated = True
         if value not in allowed:
-            validated = False
-        return validated
+            return False
+        return True
 
     @staticmethod
     def tags(value):
-        validated = True
         if not isinstance(value, list):
-            validated = False
+            return False
         if len(set(value)) != len(value):
-            validated = False
+            return False
         for val in value:
             if " " in val:
-                validated = False
+                return False
+            elif type(val) != str:
+                return False
+
         if len(value) > 10:
-            validated = False
-        return validated
+            return False
+
+        return True
 
     @staticmethod
     def collection_methods(value):
-        validated = True
+
+        # 1. type validation
         if not isinstance(value, list):
-            validated = False
+            return False
+
+        # 2. non-duplicate validtion
         if len(set(value)) != len(value):
-            validated = False
+            return False
+
+        # 3. each of collection cannot be empty
+        # AND the length should be less or equal than 20
+        # AND the type of each authors should be string
         for val in value:
             if " " in val:
-                validated = False
+                return False
+            elif len(val) > 20:
+                return False
+            elif type(val) != str:
+                return False
+
+        
+        # 4. total number of collection should be less or equal than 10
         if len(value) > 10:
-            validated = False
-        return validated
+            return False
+
+        return True
 
     @staticmethod
     def license(value):
-        validated = True
         if len(value) > 20:
-            validated = False
-        return validated
+            return False
+            
+        return True

@@ -21,11 +21,11 @@ class TestDatasetFileAPI(unittest.TestCase):
     # test_dataset_geid = "9ff8382d-f476-4cdf-a357-66c4babf8320-1626104650"
 
     # source sample
-    test_source_project = "3d25fd6d-55c9-4220-84cd-d1cf0bb8f2a1-1624987469"
+    test_source_project = "5baeb6a1-559b-4483-aadf-ef60519584f3-1620404058"
     test_source_list = [
-        "f7cf8116-37e9-493b-ae8b-0e512c5a8eb7-1625079438",
-        "cbd2f541-c64f-48dd-9c20-2a1d911f624f-1625498721", 
-        "a56df5c7-9cb1-4501-adad-046e985f4be6-1625083306"
+        "b1064aa6-edbe-4eb6-b560-a8552f2f6162-1626719078",
+        "b2411265-a207-499d-b51c-8eb4d1937450-1628620874", 
+        "af8c7e7e-8a78-4dbc-8cdb-97ca1c985172-1626709871"
     ]
 
     files = []
@@ -40,8 +40,8 @@ class TestDatasetFileAPI(unittest.TestCase):
         cls.test_dataset_geid = res.get("global_entity_id")
         print(cls.test_dataset_id)
 
-        cls.test_source_project, cls.test_source_list = \
-            cls.test.create_test_project_with_data(cls.test_project)
+        # cls.test_source_project, cls.test_source_list = \
+        #     cls.test.create_test_project_with_data(cls.test_project)
 
 
     @classmethod
@@ -51,7 +51,7 @@ class TestDatasetFileAPI(unittest.TestCase):
         try:
 
             cls.test.clean_up_test_files(cls.test_dataset_geid, cls.files)
-            cls.test.delete_test_project_and_files(cls.test_project)
+            # cls.test.delete_test_project_and_files(cls.test_project)
             cls.test.delete_test_dataset(cls.test_dataset_id)
             cls.log.info("Deleting folder path on tear down")
         except Exception as e:
@@ -72,7 +72,7 @@ class TestDatasetFileAPI(unittest.TestCase):
             "project_geid": self.test_source_project,
         }
         res = self.app.put("/v1/dataset/%s/files"%(self.test_dataset_geid), json=payload)
-        print(res.__dict__)
+        # print(res.__dict__)
         self.assertEqual(res.status_code, 200)
 
         return
@@ -152,15 +152,25 @@ class TestDatasetFileAPI(unittest.TestCase):
     
     def test_10_move_to_subfolder(self):
         print(self.files)
+
+        # pick the folder
+        file_geid, folder_geid = None, None
+        for x in self.files:
+            if "File" in x.get("labels", []):
+                file_geid = x.get("global_entity_id")
+            elif "Folder" in x.get("labels", []):
+                folder_geid = x.get("global_entity_id")
+
         payload = {
-            "source_list": [self.files[0].get("global_entity_id")], 
+            "source_list": [file_geid], 
             "operator":"admin",
-            "target_geid": self.files[1].get("global_entity_id")
+            "target_geid": folder_geid
         }
         res = self.app.post("/v1/dataset/%s/files"%(self.test_dataset_geid), json=payload)
+        print(res.__dict__)
         self.assertEqual(res.status_code, 200)
         processing_file = [x.get("global_entity_id") for x in res.json().get("result").get("processing")]
-        self.assertEqual(processing_file, [self.files[0].get("global_entity_id")])
+        self.assertEqual(processing_file, [file_geid])
 
         # then list file again to see if the file has been deleted
         res = self.app.get("/v1/dataset/%s/files"%(self.test_dataset_geid))
@@ -209,7 +219,7 @@ class TestDatasetFileAPI(unittest.TestCase):
         files = res.json().get("result").get("data")
         self.assertEqual(len(files), len(self.test_source_list)-1)
 
-    # ####################################################################################################
+    ####################################################################################################
 
     def test_20_delete_from_dataset(self):
         '''
@@ -217,14 +227,17 @@ class TestDatasetFileAPI(unittest.TestCase):
         Expected Result: the file is deleted -> length -1
         '''
 
+        res = self.app.get("/v1/dataset/%s/files"%(self.test_dataset_geid))
+        self.__class__.files = res.json().get("result").get("data")
+
         payload = {
-            "source_list":[self.files[1].get("global_entity_id")], 
+            "source_list":[self.files[0].get("global_entity_id")], 
             "operator":"admin"
         }
         res = self.app.delete("/v1/dataset/%s/files"%(self.test_dataset_geid), json=payload)
         self.assertEqual(res.status_code, 200)
         processing_file = [x.get("global_entity_id") for x in res.json().get("result").get("processing")]
-        self.assertEqual(processing_file, [self.files[1].get("global_entity_id")])
+        self.assertEqual(processing_file, [self.files[0].get("global_entity_id")])
 
         # then list file again to see if the file has been deleted
         res = self.app.get("/v1/dataset/%s/files"%(self.test_dataset_geid))
