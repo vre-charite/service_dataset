@@ -18,3 +18,4 @@ psycopg2==2.8.6
 redis==3.5.3
 fastapi_sqlalchemy==0.2.1
 bids_validator==1.7.3
+python-dotenv==0.19.1

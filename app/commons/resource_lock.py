@@ -1,3 +1,5 @@
+############ DEPRECATE THIS FILE
+
 from ..config import ConfigClass
 import requests
 

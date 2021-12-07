@@ -43,106 +43,82 @@ class DatasetFileRename(BaseModel):
 class SrvDatasetFileMgr():
 
     logger = SrvLoggerFactory('SrvDatasetFileMgr').get_logger()
+    queue_url = ConfigClass.QUEUE_SERVICE + "broker/pub"
+
+    event_action_map = {
+        "DATASET_FILE_IMPORT": "ADD",
+        "DATASET_FILE_DELETE": "REMOVE",
+        "DATASET_FILE_MOVE": "MOVE",
+        "DATASET_FILE_RENAME": "UPDATE",
+    }
 
 
     def on_import_event(self, geid, username, source_list):
-        url = ConfigClass.QUEUE_SERVICE + "broker/pub"
-        post_json = {
-            "event_type": "DATASET_FILE_IMPORT_SUCCEED",
-            "payload": {
-                "dataset_geid": geid,
-                "act_geid": get_geid(),
-                "operator": username,
-                "action": "ADD",
-                "resource": "File",
-                "detail": {
-                    "source_list": source_list #list of file name
-                }
-            },
-            "queue": "dataset_actlog",
-            "routing_key": "",
-            "exchange": {
-                "name": "DATASET_ACTS",
-                "type": "fanout"
-            }
+        detial = {
+            "source_list": source_list #list of file name
         }
-        res = requests.post(url, json=post_json)
-        if res.status_code != 200:
-            raise Exception('__on_import_event {}: {}'.format(res.status_code, res.text))
+        event_type = "DATASET_FILE_IMPORT"
+        action = self.event_action_map.get(event_type)
+        message_event = event_type+"_SUCCEED"
+        res = self._message_send(geid, username, action, message_event, detial)
+
         return res
 
 
     def on_delete_event(self, geid, username, source_list):
-        url = ConfigClass.QUEUE_SERVICE + "broker/pub"
-        post_json = {
-            "event_type": "DATASET_FILE_DELETE_SUCCEED",
-            "payload": {
-                "dataset_geid": geid,
-                "act_geid": get_geid(),
-                "operator": username,
-                "action": "REMOVE",
-                "resource": "File",
-                "detail": {
-                    "source_list": source_list #list of file name
-                }
-            },
-            "queue": "dataset_actlog",
-            "routing_key": "",
-            "exchange": {
-                "name": "DATASET_ACTS",
-                "type": "fanout"
-            }
+
+        detial = {
+            "source_list": source_list #list of file name
         }
-        res = requests.post(url, json=post_json)
-        if res.status_code != 200:
-            raise Exception('__on_delete_event {}: {}'.format(res.status_code, res.text))
+        event_type = "DATASET_FILE_DELETE"
+        action = self.event_action_map.get(event_type)
+        message_event = event_type+"_SUCCEED"
+        res = self._message_send(geid, username, action, message_event, detial)
+
         return res
 
     
     # this function will be per file/folder since the batch display
     # is not human readable
     def on_move_event(self, geid, username, source, target):
-        url = ConfigClass.QUEUE_SERVICE + "broker/pub"
-        post_json = {
-            "event_type": "DATASET_FILE_MOVE_SUCCEED",
-            "payload": {
-                "dataset_geid": geid,
-                "act_geid": get_geid(),
-                "operator": username,
-                "action": "MOVE",
-                "resource": "File",
-                "detail": {
-                    "from": source,
-                    "to": target
-                }
-            },
-            "queue": "dataset_actlog",
-            "routing_key": "",
-            "exchange": {
-                "name": "DATASET_ACTS",
-                "type": "fanout"
-            }
+
+        detial = {
+            "from": source,
+            "to": target
         }
-        res = requests.post(url, json=post_json)
-        if res.status_code != 200:
-            raise Exception('__on_move_event {}: {}'.format(res.status_code, res.text))
+        event_type = "DATASET_FILE_MOVE"
+        action = self.event_action_map.get(event_type)
+        message_event = event_type+"_SUCCEED"
+        res = self._message_send(geid, username, action, message_event, detial)
+
         return res
 
 
     def on_rename_event(self, geid, username, source, target):
-        url = ConfigClass.QUEUE_SERVICE + "broker/pub"
+
+        detial = {
+            "from": source,
+            "to": target
+        }
+        event_type = "DATASET_FILE_RENAME"
+        action = self.event_action_map.get(event_type)
+        message_event = event_type+"_SUCCEED"
+        res = self._message_send(geid, username, action, message_event, detial)
+
+        return res
+
+
+    def _message_send(self, geid:str, operator:str, action:str, event_type:str, 
+        detail:dict) -> dict:
         post_json = {
-            "event_type": "DATASET_FILE_RENAME_SUCCEED",
+            "event_type": event_type,
             "payload": {
                 "dataset_geid": geid,
                 "act_geid": get_geid(),
-                "operator": username,
-                "action": "UPDATE",
-                "resource": "File",
-                "detail": {
-                    "from": source,
-                    "to": target
-                }
+                "operator": operator,
+                "action": action,
+                "resource": "Dataset",
+                "detail": detail
             },
             "queue": "dataset_actlog",
             "routing_key": "",
@@ -151,10 +127,12 @@ class SrvDatasetFileMgr():
                 "type": "fanout"
             }
         }
-        res = requests.post(url, json=post_json)
+        self.logger.info("Sending socket notification: "+str(post_json))
+        res = requests.post(self.queue_url, json=post_json)
         if res.status_code != 200:
-            raise Exception('on_rename_event {}: {}'.format(res.status_code, res.text))
-        return res
+            raise Exception('on_{}_event {}: {}'.format(event_type, res.status_code, res.text))
+        return res.json()
+
 
 
 #########################################################################

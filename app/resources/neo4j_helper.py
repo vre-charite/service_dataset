@@ -103,11 +103,11 @@ def get_parent_node(current_node):
     return parent_node_id
 
 
-def get_children_nodes(start_geid):
+def get_children_nodes(start_geid, start_label="Folder"):
 
     payload = {
         "label": "own",
-        "start_label": "Folder",
+        "start_label": start_label,
         "start_params": {"global_entity_id":start_geid},
     }
 
@@ -171,7 +171,8 @@ def create_file_node(dataset_code, source_file, operator, parent_id, relative_pa
         "name": file_name,
         "global_entity_id": geid,
         "location": location,
-        "dataset_code": dataset_code
+        "dataset_code": dataset_code,
+        "display_path": fuf_path,
     }
 
     new_file_node, new_relation = create_node_with_parent("File", file_attribute, parent_id)
@@ -204,6 +205,7 @@ def create_folder_node(dataset_code, source_folder, operator, parent_node, relat
         "folder_relative_path": relative_path,
         "folder_level": parent_node.get("folder_level", -1)+1,
         "dataset_code": dataset_code,
+        "display_path": relative_path+"/"+folder_name,
     }
     folder_node, relation = create_node_with_parent("Folder", folder_attribute, parent_node.get('id'))
 

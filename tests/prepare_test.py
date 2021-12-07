@@ -13,7 +13,7 @@ def get_geid():
     get geid
     http://10.3.7.222:5062/v1/utility/id?entity_type=data_upload
     '''
-    url = ConfigClass.UTILITY_SERVICE + \
+    url = ConfigClass.COMMON_SERVICE + \
         "utility/id"
     response = requests.get(url)
     if response.status_code == 200:

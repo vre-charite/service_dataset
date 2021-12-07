@@ -3,8 +3,12 @@ from fastapi_sqlalchemy import db
 from app.commons.logger_services.logger_factory_service import SrvLoggerFactory
 from app.commons.service_connection.minio_client import Minio_Client
 from app.models.version_sql import DatasetVersion
+
 from app.resources.error_handler import APIException
 from app.resources.helpers import get_geid
+from app.resources.neo4j_helper import get_children_nodes
+from app.resources.locks import recursive_lock_publish, unlock_resource
+
 from app.models.schema_sql import DatasetSchema
 
 from redis import Redis
@@ -57,6 +61,14 @@ class PublishVersion(object):
 
     def publish(self):
         try:
+            # TODO some merge needed here since get_children_nodes and 
+            # get_dataset_files_recursive both get the nodes under the dataset
+
+            # lock file here
+            level1_nodes = get_children_nodes(self.dataset_geid, start_label="Dataset")
+            locked_node, err = recursive_lock_publish(level1_nodes)
+            if err: raise err
+
             self.get_dataset_files_recursive(self.dataset_geid)
             self.download_dataset_files()
             self.add_schemas()
@@ -84,6 +96,12 @@ class PublishVersion(object):
             error_msg = f"Error publishing {self.dataset_geid}: {str(e)}"
             logger.error(error_msg)
             self.update_status("failed", error_msg=error_msg)
+        finally:
+            # unlock the nodes if we got blocked
+            for resource_key, operation in locked_node:
+                unlock_resource(resource_key, operation)
+
+        return
 
     def update_activity_log(self):
         url = ConfigClass.QUEUE_SERVICE + "broker/pub"

@@ -1,3 +1,6 @@
+import re
+from app.config import ConfigClass
+
 class DatasetValidator:
     
     @staticmethod
@@ -16,15 +19,10 @@ class DatasetValidator:
 
     @staticmethod
     def code(value: str):
-        if any(ele.isupper() for ele in value):
-            return False
-        if not value.isalnum():
-            return False
-        if " " in value:
-            return False
-        if len(value) > 32:
-            return False
-        return True
+        project_code_pattern = re.compile(ConfigClass.DATASET_CODE_REGEX)
+        is_match = re.search(project_code_pattern, value)
+
+        return True if is_match else False
 
     @staticmethod
     def title(value):
@@ -48,7 +46,7 @@ class DatasetValidator:
         # AND the length should be less or equal than 20
         # AND the type of each authors should be string
         for val in value:
-            if " " in val:
+            if len(val.replace(" ", "")) == 0:
                 return False
             elif len(val) > 50:
                 return False
@@ -131,7 +129,7 @@ class DatasetValidator:
         # AND the length should be less or equal than 20
         # AND the type of each authors should be string
         for val in value:
-            if " " in val:
+            if len(val.replace(" ", "")) == 0:
                 return False
             elif len(val) > 20:
                 return False

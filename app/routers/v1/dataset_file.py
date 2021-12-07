@@ -11,7 +11,8 @@ from ...models.import_data_model import ImportDataPost, DatasetFileDelete, \
     DatasetFileMove, DatasetFileRename, SrvDatasetFileMgr
 from ...models.base_models import APIResponse, EAPIResponseCode
 from ...models.models_dataset import SrvDatasetMgr
-from ...commons.resource_lock import lock_resource, unlock_resource, check_lock
+from ...resources.locks import lock_resource, unlock_resource, recursive_lock_import, \
+    recursive_lock_delete, recursive_lock_move_rename
 
 from ...commons.logger_services.logger_factory_service import SrvLoggerFactory
 from ...commons.service_connection.minio_client import Minio_Client
@@ -40,6 +41,7 @@ class APIImportData:
 
     def __init__(self):
         self.__logger = SrvLoggerFactory('api_dataset_import').get_logger()
+        self.file_act_notifier = SrvDatasetFileMgr()
 
     @router.put("/dataset/{dataset_geid}/files", tags=[_API_TAG], #, response_model=PreUploadResponse,
                  summary="API will recieve the file list from a project and \n\
@@ -587,25 +589,26 @@ class APIImportData:
                 # TODO simplify here
                 minio_path = ff_object.get('location').split("//")[-1]
                 _, bucket, old_path = tuple(minio_path.split("/", 2))
-                # lock the resource
-                lockkey_template = "{}/{}/{}"
-                old_lockkey = "{}/{}".format(bucket, old_path)
-                new_lockkey = lockkey_template.format(dataset.get("code"), \
-                    current_root_path, new_name if new_name else ff_object.get("name"))
-                
-                # try to aquire the lock for old path and lock the new resources
-                is_lock_approved = self.try_lock(old_lockkey)
-                lock_resource(new_lockkey)
-                if not is_lock_approved:
-                    if job_tracker:
-                        job_id = job_tracker["job_id"].get(ff_geid)
-                        self.update_job_status(job_tracker["session_id"], ff_object, job_tracker["action"], \
-                            "TERMINATED", dataset, oper, job_tracker["task_id"], job_id)
 
-                    self.__logger.warn("Resource %s has been used by other process"%old_lockkey)
-                    # terminate process and unlock the new
-                    unlock_resource(new_lockkey)
-                    return num_of_files, total_file_size
+                # # lock the resource
+                # lockkey_template = "{}/{}/{}"
+                # old_lockkey = "{}/{}".format(bucket, old_path)
+                # new_lockkey = lockkey_template.format(dataset.get("code"), \
+                #     current_root_path, new_name if new_name else ff_object.get("name"))
+                
+                # # try to aquire the lock for old path and lock the new resources
+                # is_lock_approved = self.try_lock(old_lockkey)
+                # lock_resource(new_lockkey)
+                # if not is_lock_approved:
+                #     if job_tracker:
+                #         job_id = job_tracker["job_id"].get(ff_geid)
+                #         self.update_job_status(job_tracker["session_id"], ff_object, job_tracker["action"], \
+                #             "TERMINATED", dataset, oper, job_tracker["task_id"], job_id)
+
+                #     self.__logger.warn("Resource %s has been used by other process"%old_lockkey)
+                #     # terminate process and unlock the new
+                #     unlock_resource(new_lockkey)
+                #     return num_of_files, total_file_size
                 
                 # create the copied node
                 new_node, _ = create_file_node(dataset.get("code"), ff_object, oper, parent_node.get('id'), \
@@ -613,8 +616,9 @@ class APIImportData:
                 # update for number and size
                 num_of_files += 1; total_file_size += ff_object.get("file_size", 0)
                 new_lv1_nodes.append(new_node)
-                unlock_resource(old_lockkey)
-                unlock_resource(new_lockkey)
+
+                # unlock_resource(old_lockkey)
+                # unlock_resource(new_lockkey)
 
             # else it is folder will trigger the recursive
             elif 'Folder' in ff_object.get("labels"):
@@ -673,28 +677,28 @@ class APIImportData:
             # recursive logic below
             if 'File' in ff_object.get("labels"):
 
-                # lock the resource
-                lockkey_template = "{}/{}"
+                # # lock the resource
+                # lockkey_template = "{}/{}"
                 # minio location is minio://http://<end_point>/bucket/user/object_path
                 minio_path = ff_object.get('location').split("//")[-1]
                 _, bucket, obj_path = tuple(minio_path.split("/", 2))
-                lockkey = lockkey_template.format(bucket, obj_path)
-                is_lock_approved = self.try_lock(lockkey)
-                if not is_lock_approved:
-                    if job_tracker:
-                        job_id = job_tracker["job_id"].get(ff_geid)
-                        self.update_job_status(job_tracker["session_id"], ff_object, job_tracker["action"], \
-                            "TERMINATED", dataset, oper, job_tracker["task_id"], job_id)
-                    self.__logger.warn("Resource %s has been used by other process"%lockkey)
-                    # terminate process
-                    return num_of_files, total_file_size
+                # lockkey = lockkey_template.format(bucket, obj_path)
+                # is_lock_approved = self.try_lock(lockkey)
+                # if not is_lock_approved:
+                #     if job_tracker:
+                #         job_id = job_tracker["job_id"].get(ff_geid)
+                #         self.update_job_status(job_tracker["session_id"], ff_object, job_tracker["action"], \
+                #             "TERMINATED", dataset, oper, job_tracker["task_id"], job_id)
+                #     self.__logger.warn("Resource %s has been used by other process"%lockkey)
+                #     # terminate process
+                #     return num_of_files, total_file_size
 
                 # for file we can just disconnect and delete
                 # TODO MOVE OUTSIDE <=============================================================
                 delete_relation_bw_nodes(parent_node.get("id"), ff_object.get("id"))
                 delete_node(ff_object, access_token, refresh_token)
-                # unlock resource
-                unlock_resource(lockkey)
+                # # unlock resource
+                # unlock_resource(lockkey)
                 # update for number and size
                 num_of_files += 1; total_file_size += ff_object.get("file_size", 0)
 
@@ -733,26 +737,44 @@ class APIImportData:
 
         action = "dataset_file_import"
         job_tracker = self.initialize_file_jobs(session_id, action, import_list, dataset_obj, oper)
-
-        # recursively go throught the folder level by level
         root_path = ConfigClass.DATASET_FILE_FOLDER
-        num_of_files, total_file_size, _ = self.recursive_copy(import_list, dataset_obj, \
-            oper, root_path, dataset_obj, access_token, refresh_token, job_tracker)
 
-        # after all update the file number/total size/project geid
-        srv_dataset = SrvDatasetMgr()
-        update_attribute = {
-            "total_files": dataset_obj.get("total_files", 0) + num_of_files,
-            "size": dataset_obj.get("size", 0) + total_file_size,
-            "project_geid": source_project_geid,
-        }
-        srv_dataset.update(dataset_obj, update_attribute, [])
+        try:
+            # mark the source tree as read, destination as write
+            locked_node, err = recursive_lock_import(dataset_obj.get("code"), import_list, root_path)
+            if err: raise err
 
-        # also update the log
-        dataset_geid = dataset_obj.get("global_entity_id")
-        source_project = get_node_by_geid(source_project_geid)
-        import_logs = [source_project.get("code")+"/"+x.get("display_path") for x in import_list]
-        SrvDatasetFileMgr().on_import_event(dataset_geid, oper, import_logs)
+            # recursively go throught the folder level by level
+            num_of_files, total_file_size, _ = self.recursive_copy(import_list, dataset_obj, \
+                oper, root_path, dataset_obj, access_token, refresh_token, job_tracker)
+
+            # after all update the file number/total size/project geid
+            srv_dataset = SrvDatasetMgr()
+            update_attribute = {
+                "total_files": dataset_obj.get("total_files", 0) + num_of_files,
+                "size": dataset_obj.get("size", 0) + total_file_size,
+                "project_geid": source_project_geid,
+            }
+            srv_dataset.update(dataset_obj, update_attribute, [])
+
+            # also update the log
+            dataset_geid = dataset_obj.get("global_entity_id")
+            source_project = get_node_by_geid(source_project_geid)
+            import_logs = [source_project.get("code")+"/"+x.get("display_path") for x in import_list]
+            self.file_act_notifier.on_import_event(dataset_geid, oper, import_logs)
+
+        except Exception as e:
+            # here batch deny the operation
+            error_message={"err_message": str(e)}
+            # loop over all existing job and send error
+            for ff_object in import_list:
+                job_id = job_tracker["job_id"].get(ff_object.get("global_entity_id"))
+                self.update_job_status(job_tracker["session_id"], ff_object, job_tracker["action"], \
+                    "CANCELLED", dataset_obj, oper, job_tracker["task_id"], job_id, payload=error_message)
+        finally:
+            # unlock the nodes if we got blocked
+            for resource_key, operation in locked_node:
+                unlock_resource(resource_key, operation)
 
         return
 
@@ -770,39 +792,59 @@ class APIImportData:
         parent_node = target_folder
         parent_path = parent_node.get("folder_relative_path", None)
         parent_path = parent_path+"/"+parent_node.get("name") if parent_path else ConfigClass.DATASET_FILE_FOLDER
-        # but note here the job tracker is not pass into the function
-        # we only let the delete to state the finish
-        _, _, _ = self.recursive_copy(move_list, dataset_obj, oper, parent_path, parent_node, \
-            access_token, refresh_token)
 
+        try:
+            # then we mark both source node tree and target nodes as write
+            locked_node, err = recursive_lock_move_rename(move_list, parent_path)
+            if err: raise err
 
-        # delete the old one 
-        self.recursive_delete(move_list, dataset_obj, oper, parent_node, \
-            access_token, refresh_token, job_tracker=job_tracker)
+            # but note here the job tracker is not pass into the function
+            # we only let the delete to state the finish
+            _, _, _ = self.recursive_copy(move_list, dataset_obj, oper, parent_path, parent_node, \
+                access_token, refresh_token)
 
-        # generate the activity log
-        dff = ConfigClass.DATASET_FILE_FOLDER+"/"
-        for ff_geid in move_list:
-            if "File" in ff_geid.get("labels"):
-                # minio location is minio://http://<end_point>/bucket/user/object_path
-                minio_path = ff_geid.get('location').split("//")[-1]
-                _, bucket, old_path = tuple(minio_path.split("/", 2))
-                old_path = old_path.replace(dff, "", 1)
+            # delete the old one 
+            self.recursive_delete(move_list, dataset_obj, oper, parent_node, \
+                access_token, refresh_token, job_tracker=job_tracker)
 
-                # format new path if the temp is None then the path is from
-                new_path = (target_minio_path+ff_geid.get("name")).replace(dff, "", 1)
+            # generate the activity log
+            dff = ConfigClass.DATASET_FILE_FOLDER+"/"
+            for ff_geid in move_list:
+                if "File" in ff_geid.get("labels"):
+                    # minio location is minio://http://<end_point>/bucket/user/object_path
+                    minio_path = ff_geid.get('location').split("//")[-1]
+                    _, bucket, old_path = tuple(minio_path.split("/", 2))
+                    old_path = old_path.replace(dff, "", 1)
 
-            # else we mark the folder as deleted
-            else:
-                # update the relative path by remove `data` at begining
-                old_path = ff_geid.get("folder_relative_path")+"/"+ff_geid.get("name")
-                old_path = old_path.replace(dff, "", 1)
+                    # format new path if the temp is None then the path is from
+                    new_path = (target_minio_path+ff_geid.get("name")).replace(dff, "", 1)
 
-                new_path = target_minio_path+ff_geid.get("name")
-                new_path = new_path.replace(dff, "", 1)
-            
-            # send to the es for logging
-            SrvDatasetFileMgr().on_move_event(dataset_geid, oper, old_path, new_path)
+                # else we mark the folder as deleted
+                else:
+                    # update the relative path by remove `data` at begining
+                    old_path = ff_geid.get("folder_relative_path")+"/"+ff_geid.get("name")
+                    old_path = old_path.replace(dff, "", 1)
+
+                    new_path = target_minio_path+ff_geid.get("name")
+                    new_path = new_path.replace(dff, "", 1)
+                
+                # send to the es for logging
+                self.file_act_notifier.on_move_event(dataset_geid, oper, old_path, new_path)
+
+        except Exception as e:
+            # here batch deny the operation
+            error_message={"err_message": str(e)}
+            # loop over all existing job and send error
+            for ff_object in move_list:
+                job_id = job_tracker["job_id"].get(ff_object.get("global_entity_id"))
+                self.update_job_status(job_tracker["session_id"], ff_object, job_tracker["action"], \
+                    "CANCELLED", dataset_obj, oper, job_tracker["task_id"], job_id, payload=error_message)
+        finally:
+            # unlock the nodes if we got blocked
+            for resource_key, operation in locked_node:
+                unlock_resource(resource_key, operation)
+
+        return
 
 
     def delete_files_work(self, delete_list, dataset_obj, oper, session_id, access_token, \
@@ -812,48 +854,65 @@ class APIImportData:
         action = "dataset_file_delete"
         job_tracker = self.initialize_file_jobs(session_id, action, delete_list, dataset_obj, oper)
 
+        try:
+            # mark both source&destination as write lock
+            locked_node, err = recursive_lock_delete(delete_list)
+            if err: raise err
 
-        num_of_files, total_file_size = self.recursive_delete(delete_list, dataset_obj, \
-            oper, dataset_obj, access_token, refresh_token, job_tracker)
+            num_of_files, total_file_size = self.recursive_delete(delete_list, dataset_obj, \
+                oper, dataset_obj, access_token, refresh_token, job_tracker)
 
-        # TODO try to embed with the notification&job status
-        # generate log path
-        for ff_geid in delete_list:
-            if "File" in ff_geid.get("labels"):
-                # minio location is minio://http://<end_point>/bucket/user/object_path
-                minio_path = ff_geid.get('location').split("//")[-1]
-                _, bucket, obj_path = tuple(minio_path.split("/", 2))
+            # TODO try to embed with the notification&job status
+            # generate log path
+            for ff_geid in delete_list:
+                if "File" in ff_geid.get("labels"):
+                    # minio location is minio://http://<end_point>/bucket/user/object_path
+                    minio_path = ff_geid.get('location').split("//")[-1]
+                    _, bucket, obj_path = tuple(minio_path.split("/", 2))
 
-                # update metadata
-                dff = ConfigClass.DATASET_FILE_FOLDER + "/"
-                obj_path = obj_path[:len(dff)].replace(dff, "") + obj_path[len(dff):]
-                deleted_files.append(obj_path)
+                    # update metadata
+                    dff = ConfigClass.DATASET_FILE_FOLDER + "/"
+                    obj_path = obj_path[:len(dff)].replace(dff, "") + obj_path[len(dff):]
+                    deleted_files.append(obj_path)
 
-            # else we mark the folder as deleted
-            else:
-                # update the relative path by remove `data` at begining
-                dff = ConfigClass.DATASET_FILE_FOLDER
-                temp = ff_geid.get("folder_relative_path")
+                # else we mark the folder as deleted
+                else:
+                    # update the relative path by remove `data` at begining
+                    dff = ConfigClass.DATASET_FILE_FOLDER
+                    temp = ff_geid.get("folder_relative_path")
 
-                # consider the root level delete will need to remove the data path at begining
-                frp = ""
-                if dff != temp:
-                    dff = dff + "/"
-                    frp = temp.replace(dff, "", 1)
-                deleted_files.append(frp+ff_geid.get("name"))
+                    # consider the root level delete will need to remove the data path at begining
+                    frp = ""
+                    if dff != temp:
+                        dff = dff + "/"
+                        frp = temp.replace(dff, "", 1)
+                    deleted_files.append(frp+ff_geid.get("name"))
 
 
-        # after all update the file number/total size/project geid
-        srv_dataset = SrvDatasetMgr()
-        update_attribute = {
-            "total_files": dataset_obj.get("total_files", 0) - num_of_files,
-            "size": dataset_obj.get("size", 0) - total_file_size,
-        }
-        srv_dataset.update(dataset_obj, update_attribute, [])
+            # after all update the file number/total size/project geid
+            srv_dataset = SrvDatasetMgr()
+            update_attribute = {
+                "total_files": dataset_obj.get("total_files", 0) - num_of_files,
+                "size": dataset_obj.get("size", 0) - total_file_size,
+            }
+            srv_dataset.update(dataset_obj, update_attribute, [])
 
-        # also update the message to service queue
-        dataset_geid = dataset_obj.get("global_entity_id")
-        SrvDatasetFileMgr().on_delete_event(dataset_geid, oper, deleted_files)
+            # also update the message to service queue
+            dataset_geid = dataset_obj.get("global_entity_id")
+            self.file_act_notifier.on_delete_event(dataset_geid, oper, deleted_files)
+
+        except Exception as e:
+            # here batch deny the operation
+            error_message={"err_message": str(e)}
+            # loop over all existing job and send error
+            for ff_object in delete_list:
+                job_id = job_tracker["job_id"].get(ff_object.get("global_entity_id"))
+                self.update_job_status(job_tracker["session_id"], ff_object, job_tracker["action"], \
+                    "CANCELLED", dataset_obj, oper, job_tracker["task_id"], job_id, payload=error_message)
+        finally:
+            # unlock the nodes if we got blocked
+            for resource_key, operation in locked_node:
+                unlock_resource(resource_key, operation)
 
         return
         
@@ -877,38 +936,44 @@ class APIImportData:
         parent_node = get_parent_node(old_file[0])
         parent_path = parent_node.get("folder_relative_path", None)
         parent_path = parent_path+"/"+parent_node.get("name") if parent_path else ConfigClass.DATASET_FILE_FOLDER
-        # same here the job tracker is not pass into the function
-        # we only let the delete to state the finish
-        _, _, new_nodes = self.recursive_copy(old_file, dataset_obj, oper, parent_path, parent_node, \
-            access_token, refresh_token, new_name=new_name)
 
-        # delete the old one
-        self.recursive_delete(old_file, dataset_obj, oper, parent_node, access_token, \
-            refresh_token)
+        try:
+            # then we mark both source node tree and target nodes as write
+            locked_node, err = recursive_lock_move_rename(old_file, parent_path, new_name=new_name)
+            if err: raise err
 
-        # after deletion set the status using new node
-        self.update_job_status(job_tracker["session_id"], old_file[0], job_tracker["action"], \
-            "FINISH", dataset_obj, oper, job_tracker["task_id"], job_id, new_nodes[0])
+            # same here the job tracker is not pass into the function
+            # we only let the delete to state the finish
+            _, _, new_nodes = self.recursive_copy(old_file, dataset_obj, oper, parent_path, parent_node, \
+                access_token, refresh_token, new_name=new_name)
 
-        # update es & log
-        dataset_geid = dataset_obj.get("global_entity_id")
-        old_file_name = old_file[0].get("name")
-        # remove the /data in begining ONLY once
-        frp = ""
-        if ConfigClass.DATASET_FILE_FOLDER != parent_path:
-            frp = parent_path.replace(ConfigClass.DATASET_FILE_FOLDER+"/",'', 1)+"/"
-        SrvDatasetFileMgr().on_rename_event(dataset_geid, oper, frp+old_file_name, frp+new_name)
+            # delete the old one
+            self.recursive_delete(old_file, dataset_obj, oper, parent_node, access_token, \
+                refresh_token)
+
+            # after deletion set the status using new node
+            self.update_job_status(job_tracker["session_id"], old_file[0], job_tracker["action"], \
+                "FINISH", dataset_obj, oper, job_tracker["task_id"], job_id, new_nodes[0])
+
+            # update es & log
+            dataset_geid = dataset_obj.get("global_entity_id")
+            old_file_name = old_file[0].get("name")
+            # remove the /data in begining ONLY once
+            frp = ""
+            if ConfigClass.DATASET_FILE_FOLDER != parent_path:
+                frp = parent_path.replace(ConfigClass.DATASET_FILE_FOLDER+"/",'', 1)+"/"
+            self.file_act_notifier.on_rename_event(dataset_geid, oper, frp+old_file_name, frp+new_name)
+
+        except Exception as e:
+            # send the cannelled
+            error_message={"err_message": str(e)}
+            self.update_job_status(job_tracker["session_id"], old_file[0], job_tracker["action"], \
+                "CANCELLED", dataset_obj, oper, job_tracker["task_id"], job_id, payload=error_message)
+        finally:
+            # unlock the nodes if we got blocked
+            for resource_key, operation in locked_node:
+                unlock_resource(resource_key, operation)
 
         return
 
 
-    # LOCK THE RESOURCE, IF return False, 
-    def try_lock(self, lock_key):
-        res_check_lock = check_lock(lock_key)
-        # print(res_check_lock.json())
-        if res_check_lock.status_code == 200:
-            lock_status = res_check_lock.json()['result']['status']
-            if lock_status == 'LOCKED':
-                return False
-        lock_resource(lock_key)
-        return True

@@ -46,6 +46,7 @@ class VersionAPI:
             password=ConfigClass.REDIS_PASSWORD,
             db=ConfigClass.REDIS_DB,
         )
+        # TODO why here we block the double publish???
         status = self.redis_client.get(dataset_geid)
         if status:
             status = json.loads(status)["status"]

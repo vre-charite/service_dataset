@@ -1,5 +1,4 @@
 import requests
-import xmltodict
 from minio import Minio
 import os
 import time
@@ -27,14 +26,15 @@ class Minio_Client_():
 
     # function helps to get new token/refresh the token
     def _get_jwt(self):
-        print("refresh token")
+        # enable the token exchange with different azp
+        headers = {"Content-Type": "application/x-www-form-urlencoded"}
         payload = {
-            "grant_type" : "refresh_token",
-            "refresh_token": self.refresh_token,
-            "client_id":ConfigClass.MINIO_OPENID_CLIENT,
-        }
-        headers = {
-            "Content-Type": "application/x-www-form-urlencoded"
+            "grant_type" : "urn:ietf:params:oauth:grant-type:token-exchange",
+            "subject_token": self.access_token.replace("Bearer ", ""),
+            "subject_token_type":"urn:ietf:params:oauth:token-type:access_token",
+            "requested_token_type": "urn:ietf:params:oauth:token-type:refresh_token",
+            "client_id": "minio",
+            "client_secret": ConfigClass.KEYCLOAK_MINIO_SECRET
         }
 
         # use http request to fetch from keycloak
