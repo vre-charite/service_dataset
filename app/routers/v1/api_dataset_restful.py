@@ -1,6 +1,26 @@
+# Copyright 2022 Indoc Research
+# 
+# Licensed under the EUPL, Version 1.2 or – as soon they
+# will be approved by the European Commission - subsequent
+# versions of the EUPL (the "Licence");
+# You may not use this work except in compliance with the
+# Licence.
+# You may obtain a copy of the Licence at:
+# 
+# https://joinup.ec.europa.eu/collection/eupl/eupl-text-eupl-12
+# 
+# Unless required by applicable law or agreed to in
+# writing, software distributed under the Licence is
+# distributed on an "AS IS" basis,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
+# express or implied.
+# See the Licence for the specific language governing
+# permissions and limitations under the Licence.
+# 
+
 from ...models.base_models import APIResponse, EAPIResponseCode
 from ...models.models_dataset import SrvDatasetMgr
-from ...models.reqres_dataset import DatasetPostForm, DatasetPostResponse, DatasetPutForm, DatasetVerifyForm
+from ...models.reqres_dataset import DatasetPostForm, DatasetPostResponse, DatasetVerifyForm
 from ...models.validator_dataset import DatasetValidator
 from fastapi import APIRouter, Header
 from fastapi_utils import cbv
@@ -109,7 +129,9 @@ class DatasetRestful:
                 res.error_msg = "Not Found, invalid geid"
                 return res.json_response()
         else:
-            raise(Exception(response_dataset_node.text))
+            res.code = EAPIResponseCode.internal_error
+            res.error_msg = response_dataset_node.text
+            return res.json_response()
 
     @router.get("/v1/dataset-peek/{code}", tags=[_API_TAG], response_model=DatasetPostResponse,
                 summary="Get a dataset.")
@@ -137,65 +159,9 @@ class DatasetRestful:
                 res.error_msg = "Not Found, invalid dataset code"
                 return res.json_response()
         else:
-            raise(Exception(response_dataset_node.text))
-
-    @router.put("/v1/dataset/{dataset_geid}", tags=[_API_TAG], response_model=DatasetPostResponse,
-                summary="Update a dataset.")
-    @catch_internal(_API_NAMESPACE)
-    async def update_dataset(self, dataset_geid, request_payload: DatasetPutForm):
-        '''
-        dataset creation api
-        '''
-        res = APIResponse()
-
-        srv_dataset = SrvDatasetMgr()
-
-        dataset_gotten = None
-
-        # get dataset
-        response_dataset_node = srv_dataset.get_bygeid(dataset_geid)
-        if response_dataset_node.status_code == 200:
-            if len(response_dataset_node.json()) > 0:
-                dataset_gotten = response_dataset_node.json()[0]
-            else:
-                res.code = EAPIResponseCode.not_found
-                res.result = dataset_gotten
-                res.error_msg = "Not Found, invalid geid"
-                return res.json_response()
-        else:
-            raise(Exception(response_dataset_node.text))
-
-        # parse update json
-        update_json = {}
-        put_dict = request_payload.dict()
-        allowed = ['title', 'authors', 'modality',
-                   'collection_method', 'license', 'tags',
-                   'description', 'file_count', 'total_size',
-                   'activity',
-                   ]
-        for k, v in put_dict.items():
-            if k not in allowed:
-                res.code = EAPIResponseCode.bad_request
-                res.result = None
-                res.error_msg = "{} update is not allowed".format(k)
-                return res.json_response()
-            if v != None and k != 'activity':
-                validator = DatasetValidator.get(k)
-                validation = validator(v)
-                if not validation:
-                    res.code = EAPIResponseCode.bad_request
-                    res.result = None
-                    res.error_msg = "Invalid {}".format(k)
-                    return res.json_response()
-                update_json[k] = v
-
-        # do update
-        updated_node = srv_dataset.update(dataset_gotten,
-                                          update_json, request_payload.activity)
-
-        res.code = EAPIResponseCode.success
-        res.result = updated_node
-        return res.json_response()
+            res.code = EAPIResponseCode.internal_error
+            res.error_msg = response_dataset_node.text
+            return res.json_response()
 
     @router.post("/v1/dataset/verify", tags=[_API_TAG], summary="verify a bids dataset.")
     @catch_internal(_API_NAMESPACE)

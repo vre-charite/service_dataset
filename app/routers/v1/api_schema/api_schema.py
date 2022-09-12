@@ -1,3 +1,23 @@
+# Copyright 2022 Indoc Research
+# 
+# Licensed under the EUPL, Version 1.2 or – as soon they
+# will be approved by the European Commission - subsequent
+# versions of the EUPL (the "Licence");
+# You may not use this work except in compliance with the
+# Licence.
+# You may obtain a copy of the Licence at:
+# 
+# https://joinup.ec.europa.eu/collection/eupl/eupl-text-eupl-12
+# 
+# Unless required by applicable law or agreed to in
+# writing, software distributed under the Licence is
+# distributed on an "AS IS" basis,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
+# express or implied.
+# See the Licence for the specific language governing
+# permissions and limitations under the Licence.
+# 
+
 from fastapi import APIRouter, Depends
 from fastapi_utils import cbv
 from fastapi_sqlalchemy import db
@@ -5,7 +25,7 @@ from fastapi_sqlalchemy import db
 from app.commons.logger_services.logger_factory_service import SrvLoggerFactory
 from app.models.base_models import APIResponse, EAPIResponseCode
 from app.config import ConfigClass
-from app.models.schema_sql import DatasetSchema, DatasetSchemaTemplate, session
+from app.models.schema_sql import DatasetSchema, DatasetSchemaTemplate
 from app.models.schema_models import POSTSchema , POSTSchemaResponse, GETSchemaResponse, PUTSchema, PUTSchemaResponse, \
         DELETESchema, DELETESchemaResponse, POSTSchemaList
 from app.resources.error_handler import APIException
@@ -41,15 +61,16 @@ class Schema:
             if field in content:
                 payload[field.replace("dataset_", "")] = content[field]
 
-        # Frontend can't easily pass a blank string if license should be removed, so update it to blank if it exists
+        # Frontend can't easily pass a blank string if license 
+        # should be removed, so update it to blank if it exists
         # on the node and doesn't exist in payload
         if dataset_node.get("license") and not "license" in payload:
             payload["license"] = ""
 
         response = requests.put(ConfigClass.NEO4J_SERVICE + f"nodes/Dataset/node/{dataset_id}", json=payload)
         if response.status_code != 200:
-            logger.error(error_msg)
-            raise APIException(error_msg=error_msg, status_code=response.status_code)
+            logger.error(response.json())
+            raise APIException(error_msg=response.json(), status_code=response.status_code)
 
     def get_dataset_by_geid(self, dataset_geid):
         payload = {
@@ -93,6 +114,7 @@ class Schema:
             db.session.refresh(schema)
         except Exception as e:
             error_msg = f"Psql Error: {str(e)}"
+            db.session.rollback()
             logger.error(error_msg)
             raise APIException(error_msg=error_msg, status_code=EAPIResponseCode.internal_error.value)
         return schema
@@ -103,6 +125,7 @@ class Schema:
             db.session.commit()
         except Exception as e:
             error_msg = f"Psql Error: {str(e)}"
+            db.session.rollback()
             logger.error(error_msg)
             raise APIException(error_msg=error_msg, status_code=EAPIResponseCode.internal_error.value)
 
@@ -125,6 +148,7 @@ class Schema:
             error_msg = "Schema with that name already exists"
             logger.info(error_msg)
             raise APIException(error_msg=error_msg, status_code=EAPIResponseCode.conflict.value)
+
 
     @router.post("/v1/schema", tags=["schema"], response_model=POSTSchemaResponse, summary="Create a new schema")
     async def create(self, data: POSTSchema):
@@ -230,7 +254,7 @@ class Schema:
         filter_allowed = ["name", "dataset_geid", "tpl_geid", "standard",
             "system_defined", "is_draft", "create_timestamp", "update_timestamp",
             "creator"]
-        query = session.query(DatasetSchema)
+        query = db.session.query(DatasetSchema)
         for key in filter_allowed:
             filter_val = getattr(request_payload, key)
             if filter_val != None:

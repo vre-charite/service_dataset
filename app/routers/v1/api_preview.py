@@ -1,3 +1,23 @@
+# Copyright 2022 Indoc Research
+# 
+# Licensed under the EUPL, Version 1.2 or – as soon they
+# will be approved by the European Commission - subsequent
+# versions of the EUPL (the "Licence");
+# You may not use this work except in compliance with the
+# Licence.
+# You may obtain a copy of the Licence at:
+# 
+# https://joinup.ec.europa.eu/collection/eupl/eupl-text-eupl-12
+# 
+# Unless required by applicable law or agreed to in
+# writing, software distributed under the Licence is
+# distributed on an "AS IS" basis,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
+# express or implied.
+# See the Licence for the specific language governing
+# permissions and limitations under the Licence.
+# 
+
 from fastapi import APIRouter, Header
 from typing import Optional
 from fastapi.responses import StreamingResponse
@@ -108,7 +128,7 @@ class Preview:
         return content
 
     def parse_location(self, path):
-        # parse from format minio://http://10.3.7.220/gr-generate/admin/generate_folder/ABC-1234_OIP.WH4UEecUNFLkLRAy3cbgQQHaEK.jpg
+        # parse from format minio://<minio_host>/<zone>-<project_code>/<user>/<files>
         protocol = "https://" if ConfigClass.MINIO_HTTPS else "http://"
         path = path.replace("minio://", "").replace(protocol, "").split("/")
         bucket = path[1]

@@ -1,8 +1,28 @@
+# Copyright 2022 Indoc Research
+# 
+# Licensed under the EUPL, Version 1.2 or – as soon they
+# will be approved by the European Commission - subsequent
+# versions of the EUPL (the "Licence");
+# You may not use this work except in compliance with the
+# Licence.
+# You may obtain a copy of the Licence at:
+# 
+# https://joinup.ec.europa.eu/collection/eupl/eupl-text-eupl-12
+# 
+# Unless required by applicable law or agreed to in
+# writing, software distributed under the Licence is
+# distributed on an "AS IS" basis,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
+# express or implied.
+# See the Licence for the specific language governing
+# permissions and limitations under the Licence.
+# 
+
 from ..config import ConfigClass
 from ..commons.logger_services.logger_factory_service import SrvLoggerFactory
 from ..commons.service_connection.minio_client import Minio_Client
 from ..commons.service_connection.dataset_policy_template import create_dataset_policy_template
-from app.models.schema_sql import session, DatasetSchemaTemplate, DatasetSchema
+from app.models.schema_sql import DatasetSchemaTemplate, DatasetSchema
 from minio.sseconfig import Rule, SSEConfig
 from fastapi_sqlalchemy import db
 import requests
@@ -19,8 +39,7 @@ class SrvDatasetMgr():
     ''' 
     logger = SrvLoggerFactory('SrvDatasetMgr').get_logger()
 
-    def create(self, username, code, title, authors,
-        type, modality, collection_method, tags, license, description):
+    def create(self, username, code, title, authors, type, modality, collection_method, tags, license, description):
         '''
         Create File Data Entity V2
         '''
@@ -40,25 +59,20 @@ class SrvDatasetMgr():
             "name": code,
             "creator": username,
         }
-        self.logger.debug('SrvDatasetMgr post_json_form' +
-                          str(post_json_form))     
+        self.logger.debug('SrvDatasetMgr post_json_form' + str(post_json_form))
         result_create_node = http_post_node(post_json_form)
         if result_create_node.status_code == 200:
             node_created = result_create_node.json()[0]
-            self.__link_user(node_created["id"], username)
             created_atlas = self.__create_atlas_node(node_created["global_entity_id"], username)
-            event_created = self.__on_create_event(node_created["global_entity_id"], username)
-            created_essentials = self.__create_essentials(
-                node_created["global_entity_id"], code,
-                title, authors, type, modality, collection_method, license, description, tags,
-                username)
+            created_essentials = self.__create_essentials(node_created["global_entity_id"], code, title, authors, 
+                    type, modality, collection_method, license, description, tags, username)
 
             # and also create minio bucket with the dataset code
             try:
                 mc = Minio_Client()
                 mc.client.make_bucket(code)
                 mc.client.set_bucket_encryption(code, SSEConfig(Rule.new_sse_s3_rule()))
-                
+
                 print("createing the policy")
                 # also use the lazy loading to create the policy in minio
                 stream = os.popen('mc admin policy info minio %s'%(username))
@@ -75,9 +89,9 @@ class SrvDatasetMgr():
 
                 stream = os.popen('mc admin policy add minio %s %s'%(username, policy_file_name))
                 output = stream.read()
-                # then remove the policy file until the os is finish 
+                # then remove the policy file until the os is finish
                 # otherwise there will be the racing issue
-                os.remove(policy_file_name) 
+                os.remove(policy_file_name)
 
             except Exception as e:
                 self.logger.error("error when creating minio: "+str(e))
@@ -86,17 +100,12 @@ class SrvDatasetMgr():
         else:
             raise Exception(str(result_create_node.text))
 
-    def update(self, current_node, update_json, activities: list):
+    def update(self, current_node, update_json):
         res_update_node = http_update_node("Dataset", current_node['id'], update_json)
         if res_update_node.status_code == 200:
             pass
         else:
             raise Exception(str(res_update_node.text))
-        for activity in activities:
-            event_created = self.__on_update_event(
-                current_node["global_entity_id"],
-                current_node['creator'],
-                activity)
         return res_update_node.json()[0]
 
 
@@ -116,78 +125,6 @@ class SrvDatasetMgr():
         response = requests.post(node_query_url, json=payload)
         return response
 
-    def __link_user(self, dataset_id, username):
-        '''
-        link user
-        '''
-        respon_user_query = http_get_usernode(username)
-        if not respon_user_query.status_code == 200:
-            raise(Exception("[respon_user_query Error] {} {}".format(
-                respon_user_query.status_code, respon_user_query.text)))
-        users_fetch = respon_user_query.json()
-        if len(users_fetch) < 1:
-            raise(Exception("[respon_user_query Error] Not Found User {}".format(username)))
-        user_node = respon_user_query.json()[0]
-        relation_payload = {
-            "start_id": user_node["id"], "end_id": dataset_id}
-        response = requests.post(ConfigClass.NEO4J_SERVICE +
-                                "relations/own", json=relation_payload)
-        if response.status_code // 100 == 2:
-            return response
-        else:
-            raise(Exception("[link_user Error] {} {}".format(
-                response.status_code, response.text)))
-
-    def __on_create_event(self, geid, username):
-        url = ConfigClass.QUEUE_SERVICE + "broker/pub"
-        post_json = {
-            "event_type": "DATASET_CREATE_SUCCEED",
-            "payload": {
-                "dataset_geid": geid,
-                "act_geid": get_geid(),
-                "operator": username,
-                "action": "CREATE",
-                "resource": "Dataset",
-                "detail": {
-                    "source": geid
-                }
-            },
-            "queue": "dataset_actlog",
-            "routing_key": "",
-            "exchange": {
-            "name": "DATASET_ACTS",
-            "type": "fanout"
-            }
-        }
-        res = requests.post(url, json=post_json)
-        if res.status_code != 200:
-            raise Exception('__on_create_event {}: {}'.format(res.status_code, res.text))
-        return res
-
-    def __on_update_event(self, geid, username, activity):
-        url = ConfigClass.QUEUE_SERVICE + "broker/pub"
-        post_json = {
-            "event_type": "DATASET_UPDATE_SUCCEED",
-            "payload": {
-                "dataset_geid": geid,
-                "act_geid": get_geid(),
-                "operator": username,
-                "action": activity.action,
-                "resource": activity.resource,
-                "detail": activity.detail
-            },
-            "queue": "dataset_actlog",
-            "routing_key": "",
-            "exchange": {
-            "name": "DATASET_ACTS",
-            "type": "fanout"
-            }
-        }
-        res = requests.post(url, json=post_json)
-        if res.status_code != 200:
-            raise Exception('__on_create_event {}: {}'.format(res.status_code, res.text))
-        return res
-
 
     def __create_atlas_node(self, geid, username):
         res = create_atlas_dataset(geid, username)
@@ -198,7 +135,7 @@ class SrvDatasetMgr():
     def __create_essentials(self, dataset_geid, code, title,
         authors, type, modality, collection_method, license, description, tags, creator):
         def get_essential_tpl() -> DatasetSchemaTemplate:
-            etpl_result = session.query(DatasetSchemaTemplate).\
+            etpl_result = db.session.query(DatasetSchemaTemplate).\
                 filter(DatasetSchemaTemplate.name == ESSENTIALS_TPL_NAME).all()
             if not etpl_result:
                 raise Exception("{} template not found in database.".format(ESSENTIALS_TPL_NAME))
@@ -236,6 +173,7 @@ def db_add_operation(schema):
         db.session.commit()
         db.session.refresh(schema)
     except Exception as e:
+        db.session.rollback()
         error_msg = f"Psql Error: {str(e)}"
         raise Exception(error_msg)
     return schema
@@ -261,24 +199,6 @@ def http_post_node(node_dict: dict, geid=None):
         node_dict["global_entity_id"] = get_geid()
     node_creation_url = ConfigClass.NEO4J_SERVICE + "nodes/Dataset"
     response = requests.post(node_creation_url, json=node_dict)
-    return response
-
-
-def http_get_usernode(username):
-    payload = {
-        "username": username
-    }
-    node_query_url = ConfigClass.NEO4J_SERVICE + "nodes/User/query"
-    response = requests.post(node_query_url, json=payload)
-    return response
-
-
-def http_query_node_bygeid(label, geid):
-    payload = {
-        "global_entity_id": geid
-    }
-    node_query_url = ConfigClass.NEO4J_SERVICE + "nodes/{}/query".format(label)
-    response = requests.post(node_query_url, json=payload)
     return response
 
 

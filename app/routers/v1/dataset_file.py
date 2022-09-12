@@ -1,3 +1,23 @@
+# Copyright 2022 Indoc Research
+# 
+# Licensed under the EUPL, Version 1.2 or – as soon they
+# will be approved by the European Commission - subsequent
+# versions of the EUPL (the "Licence");
+# You may not use this work except in compliance with the
+# Licence.
+# You may obtain a copy of the Licence at:
+# 
+# https://joinup.ec.europa.eu/collection/eupl/eupl-text-eupl-12
+# 
+# Unless required by applicable law or agreed to in
+# writing, software distributed under the Licence is
+# distributed on an "AS IS" basis,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
+# express or implied.
+# See the Licence for the specific language governing
+# permissions and limitations under the Licence.
+# 
+
 import requests
 from fastapi import APIRouter, BackgroundTasks, Header, File, UploadFile, Form, \
     Cookie
@@ -397,7 +417,7 @@ class APIImportData:
         core_file = []
         not_core_file = []
         for current_node in ff_list:
-            if "VRECore" not in current_node.get("labels", []):
+            if ConfigClass.CORE_ZONE_LABEL not in current_node.get("labels", []):
                 current_node.update({"feedback":"not core file"})
                 not_core_file.append(current_node)
             else:
@@ -589,26 +609,6 @@ class APIImportData:
                 # TODO simplify here
                 minio_path = ff_object.get('location').split("//")[-1]
                 _, bucket, old_path = tuple(minio_path.split("/", 2))
-
-                # # lock the resource
-                # lockkey_template = "{}/{}/{}"
-                # old_lockkey = "{}/{}".format(bucket, old_path)
-                # new_lockkey = lockkey_template.format(dataset.get("code"), \
-                #     current_root_path, new_name if new_name else ff_object.get("name"))
-                
-                # # try to aquire the lock for old path and lock the new resources
-                # is_lock_approved = self.try_lock(old_lockkey)
-                # lock_resource(new_lockkey)
-                # if not is_lock_approved:
-                #     if job_tracker:
-                #         job_id = job_tracker["job_id"].get(ff_geid)
-                #         self.update_job_status(job_tracker["session_id"], ff_object, job_tracker["action"], \
-                #             "TERMINATED", dataset, oper, job_tracker["task_id"], job_id)
-
-                #     self.__logger.warn("Resource %s has been used by other process"%old_lockkey)
-                #     # terminate process and unlock the new
-                #     unlock_resource(new_lockkey)
-                #     return num_of_files, total_file_size
                 
                 # create the copied node
                 new_node, _ = create_file_node(dataset.get("code"), ff_object, oper, parent_node.get('id'), \
@@ -616,9 +616,6 @@ class APIImportData:
                 # update for number and size
                 num_of_files += 1; total_file_size += ff_object.get("file_size", 0)
                 new_lv1_nodes.append(new_node)
-
-                # unlock_resource(old_lockkey)
-                # unlock_resource(new_lockkey)
 
             # else it is folder will trigger the recursive
             elif 'Folder' in ff_object.get("labels"):
@@ -657,7 +654,6 @@ class APIImportData:
 
         num_of_files = 0
         total_file_size = 0
-        deleted_lv1_node = []
 
         # copy the files under the project neo4j node to dataset node
         for ff_object in currenct_nodes:
@@ -677,28 +673,16 @@ class APIImportData:
             # recursive logic below
             if 'File' in ff_object.get("labels"):
 
-                # # lock the resource
-                # lockkey_template = "{}/{}"
+                # lock the resource
                 # minio location is minio://http://<end_point>/bucket/user/object_path
                 minio_path = ff_object.get('location').split("//")[-1]
                 _, bucket, obj_path = tuple(minio_path.split("/", 2))
-                # lockkey = lockkey_template.format(bucket, obj_path)
-                # is_lock_approved = self.try_lock(lockkey)
-                # if not is_lock_approved:
-                #     if job_tracker:
-                #         job_id = job_tracker["job_id"].get(ff_geid)
-                #         self.update_job_status(job_tracker["session_id"], ff_object, job_tracker["action"], \
-                #             "TERMINATED", dataset, oper, job_tracker["task_id"], job_id)
-                #     self.__logger.warn("Resource %s has been used by other process"%lockkey)
-                #     # terminate process
-                #     return num_of_files, total_file_size
 
                 # for file we can just disconnect and delete
                 # TODO MOVE OUTSIDE <=============================================================
                 delete_relation_bw_nodes(parent_node.get("id"), ff_object.get("id"))
                 delete_node(ff_object, access_token, refresh_token)
-                # # unlock resource
-                # unlock_resource(lockkey)
+                
                 # update for number and size
                 num_of_files += 1; total_file_size += ff_object.get("file_size", 0)
 
@@ -755,7 +739,7 @@ class APIImportData:
                 "size": dataset_obj.get("size", 0) + total_file_size,
                 "project_geid": source_project_geid,
             }
-            srv_dataset.update(dataset_obj, update_attribute, [])
+            srv_dataset.update(dataset_obj, update_attribute)
 
             # also update the log
             dataset_geid = dataset_obj.get("global_entity_id")
@@ -895,7 +879,7 @@ class APIImportData:
                 "total_files": dataset_obj.get("total_files", 0) - num_of_files,
                 "size": dataset_obj.get("size", 0) - total_file_size,
             }
-            srv_dataset.update(dataset_obj, update_attribute, [])
+            srv_dataset.update(dataset_obj, update_attribute)
 
             # also update the message to service queue
             dataset_geid = dataset_obj.get("global_entity_id")
