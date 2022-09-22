@@ -1,3 +1,23 @@
+# Copyright 2022 Indoc Research
+# 
+# Licensed under the EUPL, Version 1.2 or – as soon they
+# will be approved by the European Commission - subsequent
+# versions of the EUPL (the "Licence");
+# You may not use this work except in compliance with the
+# Licence.
+# You may obtain a copy of the Licence at:
+# 
+# https://joinup.ec.europa.eu/collection/eupl/eupl-text-eupl-12
+# 
+# Unless required by applicable law or agreed to in
+# writing, software distributed under the Licence is
+# distributed on an "AS IS" basis,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
+# express or implied.
+# See the Licence for the specific language governing
+# permissions and limitations under the Licence.
+# 
+
 from fastapi import APIRouter
 from fastapi_utils import cbv
 from requests.api import post
@@ -30,12 +50,8 @@ class DatasetList:
         dataset creation api
         '''
         res = APIResponse()
-        # post_dict = request_payload.dict()
-        filter = request_payload.filter
         page = request_payload.page
         page_size = request_payload.page_size
-        creator = username
-        filter['creator'] = creator
 
         page_kwargs = {
             "order_by": request_payload.order_by,
@@ -43,33 +59,30 @@ class DatasetList:
             "skip": page * page_size,
             "limit": page_size
         }
-        
-        relation_payload = {
-            **page_kwargs,
-            "start_label": "User",
-            "end_labels": ["Dataset"],
-            "query": {
-                "start_params": {"username": creator},
-                "end_params": {},
-            },
-        }
 
+        query_payload = {
+            **page_kwargs,
+            "query": {
+                "creator": username,
+                "labels": ["Dataset"]
+            }
+        }
         try:
-            response = requests.post(ConfigClass.NEO4J_SERVICE_V2 + "relations/query", json=relation_payload)
+            response = requests.post(ConfigClass.NEO4J_SERVICE_V2 + "nodes/query", json=query_payload)
             if response.status_code != 200:
                 error_msg = response.json()
                 res.code = EAPIResponseCode.internal_error
                 res.error_msg = f"Neo4j error: {error_msg}"
                 return res.json_response()
-            nodes = response.json()
+            nodes = response.json()["result"]
         except Exception as e:
             res.code = EAPIResponseCode.internal_error
             res.error_msg = "Neo4j error: " + str(e)
             return res.json_response()
 
         res.code = EAPIResponseCode.success
-        res.total = nodes['total']
+        res.total = response.json()['total']
         res.page = page
         res.num_of_pages = math.ceil(res.total / page_size)
-        res.result = nodes['results']
+        res.result = nodes
         return res.json_response()

@@ -1,33 +1,50 @@
-import os
-import requests
-from requests.models import HTTPError
-from pydantic import BaseSettings, Extra
-from typing import Dict, Set, List, Any
-from functools import lru_cache
+# Copyright 2022 Indoc Research
+# 
+# Licensed under the EUPL, Version 1.2 or – as soon they
+# will be approved by the European Commission - subsequent
+# versions of the EUPL (the "Licence");
+# You may not use this work except in compliance with the
+# Licence.
+# You may obtain a copy of the Licence at:
+# 
+# https://joinup.ec.europa.eu/collection/eupl/eupl-text-eupl-12
+# 
+# Unless required by applicable law or agreed to in
+# writing, software distributed under the Licence is
+# distributed on an "AS IS" basis,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
+# express or implied.
+# See the Licence for the specific language governing
+# permissions and limitations under the Licence.
+# 
 
-SRV_NAMESPACE = os.environ.get("APP_NAME", "service_dataset")
-CONFIG_CENTER_ENABLED = os.environ.get("CONFIG_CENTER_ENABLED", "false")
-CONFIG_CENTER_BASE_URL = os.environ.get("CONFIG_CENTER_BASE_URL", "NOT_SET")
+import os
+from pydantic import BaseSettings, Extra
+from typing import Dict, Any
+
+from common import VaultClient
+from starlette.config import Config
+
+config = Config(".env")
+SRV_NAMESPACE = config("APP_NAME", cast=str, default="service_dataset")
+CONFIG_CENTER_ENABLED = config("CONFIG_CENTER_ENABLED", cast=str, default="false")
+CONFIG_CENTER_BASE_URL = config("CONFIG_CENTER_BASE_URL", cast=str, default="NOT_SET")
+
 
 def load_vault_settings(settings: BaseSettings) -> Dict[str, Any]:
-    if CONFIG_CENTER_ENABLED == "false":
+    if CONFIG_CENTER_ENABLED == 'false':
         return {}
     else:
-        return vault_factory(CONFIG_CENTER_BASE_URL)
-
-def vault_factory(config_center) -> dict:
-    url = f"{config_center}/v1/utility/config/{SRV_NAMESPACE}"
-    config_center_respon = requests.get(url)
-    if config_center_respon.status_code != 200:
-        raise HTTPError(config_center_respon.text)
-    return config_center_respon.json()['result']
-
+        vc = VaultClient(config("VAULT_URL"), config("VAULT_CRT"), config("VAULT_TOKEN"))
+        return vc.get_from_vault(SRV_NAMESPACE)
 
 class Settings(BaseSettings):
     port: int = 5081
     host: str = "0.0.0.0"
     env: str = ""
+    VERSION: str = '0.2.3'
     namespace: str = ""
+    OPEN_TELEMETRY_ENABLED: str
 
     DATASET_FILE_FOLDER: str = "data"
     DATASET_SCHEMA_FOLDER: str = "schema"
@@ -35,18 +52,16 @@ class Settings(BaseSettings):
     DATASET_CODE_REGEX: str = "^[a-z0-9]{3,32}$"
 
     # disk mounts
-    NFS_ROOT_PATH: str = "./"
-    VRE_ROOT_PATH: str = "/vre-data"
-    ROOT_PATH: str = {
-        "vre": "/vre-data"
-    }.get(os.environ.get('namespace'), "/data/vre-storage")
+    ROOT_PATH: str
+
+    CORE_ZONE_LABEL: str
+    GREEN_ZONE_LABEL: str
 
     # minio
     MINIO_OPENID_CLIENT: str 
     MINIO_ENDPOINT: str
     MINIO_HTTPS: bool = False
     KEYCLOAK_URL: str
-    MINIO_TEST_PASS: str
     MINIO_ACCESS_KEY: str
     MINIO_SECRET_KEY: str
     KEYCLOAK_MINIO_SECRET: str
@@ -100,83 +115,40 @@ class Settings(BaseSettings):
             file_secret_settings,
         ):
             return (
-                load_vault_settings,
                 env_settings,
+                load_vault_settings,
                 init_settings,
                 file_secret_settings,
             )
-    
 
-@lru_cache(1)
-def get_settings():
-    settings =  Settings()
-    return settings
+    def __init__(self) -> None:
+        super().__init__()
 
-class ConfigClass(object):
-    settings = get_settings()
+        
+        self.disk_namespace = self.namespace
+        self.opentelemetry_enabled = self.OPEN_TELEMETRY_ENABLED == "TRUE"
 
-    version = "0.1.0"
-    env = settings.env
-    disk_namespace = settings.namespace
+        self.MINIO_TMP_PATH = self.ROOT_PATH + '/tmp/'
 
-     # we use the subfolder to seperate the file
-    # and schema in Minio
-    DATASET_FILE_FOLDER = settings.DATASET_FILE_FOLDER
-    DATASET_SCHEMA_FOLDER = settings.DATASET_SCHEMA_FOLDER
+        self.NEO4J_SERVICE_V2 = self.NEO4J_SERVICE + "/v2/neo4j/"
+        self.NEO4J_SERVICE += "/v1/neo4j/"
+        self.QUEUE_SERVICE += "/v1/"
+        self.CATALOGUING_SERVICE_V1 = self.CATALOGUING_SERVICE + "/v1/"
+        self.CATALOGUING_SERVICE_V2 = self.CATALOGUING_SERVICE + "/v2/"
+        self.COMMON_SERVICE = self.UTILITY_SERVICE + "/v1/"
+        self.ENTITYINFO_SERVICE += "/v1/"
+        self.ELASTIC_SEARCH_SERVICE += "/"
+        
+        self.DATA_UTILITY_SERVICE = self.DATA_OPS_UTIL + "/v1/"
+        self.DATA_UTILITY_SERVICE_v2 = self.DATA_OPS_UTIL + "/v2/"
+        self.SEND_MESSAGE_URL += "/v1/send_message"
 
-    DATASET_CODE_REGEX = settings.DATASET_CODE_REGEX
+        self.OPS_DB_URI = f"postgresql://{self.RDS_USER}:{self.RDS_PWD}@{self.RDS_HOST}/{self.RDS_DBNAME}"
 
-    # disk mounts
-    NFS_ROOT_PATH = settings.NFS_ROOT_PATH
-    VRE_ROOT_PATH = settings.VRE_ROOT_PATH
-    ROOT_PATH = settings.ROOT_PATH
+        # Redis Service
+        self.REDIS_PORT = int(self.REDIS_PORT)
+        self.REDIS_DB = int(self.REDIS_DB)
 
-    # minio
-    MINIO_OPENID_CLIENT = settings.MINIO_OPENID_CLIENT
-    MINIO_ENDPOINT = settings.MINIO_ENDPOINT
-    MINIO_HTTPS = settings.MINIO_HTTPS
-    KEYCLOAK_URL = settings.KEYCLOAK_URL
-    MINIO_TEST_PASS = settings.MINIO_TEST_PASS
-    MINIO_TMP_PATH = ROOT_PATH + '/tmp/'
-    MINIO_ACCESS_KEY = settings.MINIO_ACCESS_KEY
-    MINIO_SECRET_KEY = settings.MINIO_SECRET_KEY
-    KEYCLOAK_MINIO_SECRET = settings.KEYCLOAK_MINIO_SECRET
 
-    NEO4J_SERVICE = settings.NEO4J_SERVICE + "/v1/neo4j/"
-    NEO4J_SERVICE_V2 = settings.NEO4J_SERVICE + "/v2/neo4j/"
-    QUEUE_SERVICE = settings.QUEUE_SERVICE + "/v1/"
-    CATALOGUING_SERVICE_V1 = settings.CATALOGUING_SERVICE + "/v1/"
-    CATALOGUING_SERVICE_V2 = settings.CATALOGUING_SERVICE + "/v2/"
-    COMMON_SERVICE = settings.UTILITY_SERVICE + "/v1/"
-    ENTITYINFO_SERVICE = settings.ENTITYINFO_SERVICE + "/v1/"
-    ELASTIC_SEARCH_SERVICE = settings.ELASTIC_SEARCH_SERVICE + "/"
-    gm_queue_endpoint = settings.gm_queue_endpoint
-    gm_username = settings.gm_username
-    gm_password = settings.gm_password
-    DATA_UTILITY_SERVICE = settings.DATA_OPS_UTIL + "/v1/"
-    DATA_UTILITY_SERVICE_v2 = settings.DATA_OPS_UTIL + "/v2/"
-    SEND_MESSAGE_URL = settings.SEND_MESSAGE_URL + "/v1/send_message"
+ConfigClass = Settings()
 
-    RDS_HOST = settings.RDS_HOST
-    RDS_PORT = settings.RDS_PORT
-    RDS_DBNAME = settings.RDS_DBNAME
-    RDS_USER = settings.RDS_USER
-    RDS_PWD = settings.RDS_PWD
-    RDS_SCHEMA_DEFAULT = settings.RDS_SCHEMA_DEFAULT
-    OPS_DB_URI = f"postgresql://{RDS_USER}:{RDS_PWD}@{RDS_HOST}/{RDS_DBNAME}"
-
-    # Redis Service
-    REDIS_HOST = settings.REDIS_HOST
-    REDIS_PORT = int(settings.REDIS_PORT)
-    REDIS_DB = int(settings.REDIS_DB)
-    REDIS_PASSWORD = settings.REDIS_PASSWORD
-
-    # download secret
-    DOWNLOAD_KEY = settings.DOWNLOAD_KEY
-    DOWNLOAD_TOKEN_EXPIRE_AT = settings.DOWNLOAD_TOKEN_EXPIRE_AT
-
-    MAX_PREVIEW_SIZE = settings.MAX_PREVIEW_SIZE
-
-    # dataset schema default
-    ESSENTIALS_NAME = settings.ESSENTIALS_NAME
-    ESSENTIALS_TPL_NAME = settings.ESSENTIALS_TPL_NAME

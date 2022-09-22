@@ -18,5 +18,5 @@
 // permissions and limitations under the Licence.
 // 
 
-pytest==6.1.1
-pytest-env==0.6.2
+--extra-index-url https://${PIP_USERNAME}:${PIP_PASSWORD}@git.indocresearch.org/api/v4/groups/pilot/-/packages/pypi/simple
+common==0.0.19

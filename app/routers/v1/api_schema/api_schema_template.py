@@ -1,8 +1,29 @@
+# Copyright 2022 Indoc Research
+# 
+# Licensed under the EUPL, Version 1.2 or – as soon they
+# will be approved by the European Commission - subsequent
+# versions of the EUPL (the "Licence");
+# You may not use this work except in compliance with the
+# Licence.
+# You may obtain a copy of the Licence at:
+# 
+# https://joinup.ec.europa.eu/collection/eupl/eupl-text-eupl-12
+# 
+# Unless required by applicable law or agreed to in
+# writing, software distributed under the Licence is
+# distributed on an "AS IS" basis,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
+# express or implied.
+# See the Licence for the specific language governing
+# permissions and limitations under the Licence.
+# 
+
 import requests
 from fastapi import APIRouter, BackgroundTasks, Header, File, UploadFile, Form, \
     Cookie
 from typing import Optional
 from fastapi_utils import cbv
+from fastapi_sqlalchemy import db
 import json
 import time
 import uuid
@@ -11,7 +32,7 @@ from sqlalchemy.orm.exc import NoResultFound
 
 from app.models.schema_template_model import SchemaTemplatePost, SchemaTemplatePut,\
     SchemaTemplateList, SrvDatasetSchemaTemplateMgr
-from app.models.schema_sql import session, DatasetSchemaTemplate
+from app.models.schema_sql import DatasetSchemaTemplate
 from app.models.base_models import APIResponse, EAPIResponseCode
 
 from app.commons.logger_services.logger_factory_service import SrvLoggerFactory
@@ -30,7 +51,7 @@ HEADERS = {"accept": "application/json", "Content-Type": "application/json"}
 # this function will check if the template name already exist
 def check_template_name(name, dataset_geid):
     try:
-        result = session.query(DatasetSchemaTemplate)\
+        result = db.session.query(DatasetSchemaTemplate)\
                 .filter(DatasetSchemaTemplate.name == name)\
                 .filter(DatasetSchemaTemplate.dataset_geid == dataset_geid).one()
     except NoResultFound:
@@ -62,29 +83,33 @@ class APISchemaTemplate:
             api_response.error_msg = "The template name already exists."
             return api_response
 
+        try:
+            new_template = DatasetSchemaTemplate(
+                geid=get_geid(),
+                name=request_payload.name,
+                dataset_geid=dataset_geid,
+                standard=request_payload.standard,
+                system_defined=request_payload.system_defined,
+                is_draft=request_payload.is_draft,
+                content=request_payload.content,
+                creator=request_payload.creator,
+            )
 
-        new_template = DatasetSchemaTemplate(
-            geid=get_geid(),
-            name=request_payload.name,
-            dataset_geid=dataset_geid,
-            standard=request_payload.standard,
-            system_defined=request_payload.system_defined,
-            is_draft=request_payload.is_draft,
-            content=request_payload.content,
-            creator=request_payload.creator,
-        )
+            db.session.add(new_template)
+            db.session.commit()
+            api_response.result = new_template.to_dict()
 
-        session.add(new_template)
-        session.commit()
-        api_response.result = new_template.to_dict()
-
-        # create the log activity
-        self.__activity_manager.on_create_event(
-            dataset_geid,
-            new_template.geid,
-            request_payload.creator,
-            request_payload.name
-        )
+            # create the log activity
+            self.__activity_manager.on_create_event(
+                dataset_geid,
+                new_template.geid,
+                request_payload.creator,
+                request_payload.name
+            )
+        except Exception as e:
+            api_response.code = EAPIResponseCode.bad_request
+            api_response.error_msg = str(e)
+            db.session.rollback()
 
         return api_response.json_response()
 
@@ -95,22 +120,27 @@ class APISchemaTemplate:
     async def list_schema_template(self, dataset_geid, request_payload: SchemaTemplateList):
         api_response = APIResponse()
         result = None
-        if dataset_geid == "default":
-            result = session.query(DatasetSchemaTemplate).\
-                filter(DatasetSchemaTemplate.system_defined == True).all()
-        else:
-            result = session.query(DatasetSchemaTemplate).\
-                filter(DatasetSchemaTemplate.dataset_geid == dataset_geid).all()
 
-        ret = []
-        for x in result:
-            ret.append({
-                "geid": x.geid,
-                "name": x.name,
-                "system_defined": x.system_defined,
-                "standard": x.standard,
-            })
-        api_response.result = ret
+        try:
+            if dataset_geid == "default":
+                result = db.session.query(DatasetSchemaTemplate).\
+                    filter(DatasetSchemaTemplate.system_defined == True).all()
+            else:
+                result = db.session.query(DatasetSchemaTemplate).\
+                    filter(DatasetSchemaTemplate.dataset_geid == dataset_geid).all()
+
+            ret = []
+            for x in result:
+                ret.append({
+                    "geid": x.geid,
+                    "name": x.name,
+                    "system_defined": x.system_defined,
+                    "standard": x.standard,
+                })
+            api_response.result = ret
+        except Exception as e:
+            api_response.code = EAPIResponseCode.bad_request
+            api_response.error_msg = str(e)
 
         return api_response
 
@@ -124,7 +154,7 @@ class APISchemaTemplate:
         api_response = APIResponse()
 
         try:
-            result = session.query(DatasetSchemaTemplate)\
+            result = db.session.query(DatasetSchemaTemplate)\
                     .filter(DatasetSchemaTemplate.geid == template_geid)
             if dataset_geid == "default":
                 result = result.filter(DatasetSchemaTemplate.system_defined == True).one()
@@ -134,6 +164,11 @@ class APISchemaTemplate:
             api_response.result = result.to_dict()
         except NoResultFound:
             api_response.code = EAPIResponseCode.not_found
+            api_response.error_msg = "template %s is not found"%template_geid
+            db.session.rollback()
+        except Exception as e:
+            api_response.code = EAPIResponseCode.bad_request
+            api_response.error_msg = str(e)
 
         return api_response.json_response()
 
@@ -154,7 +189,7 @@ class APISchemaTemplate:
             return api_response, EAPIResponseCode.forbidden
 
         try:
-            result = session.query(DatasetSchemaTemplate)\
+            result = db.session.query(DatasetSchemaTemplate)\
                 .filter(DatasetSchemaTemplate.geid == template_geid)\
                 .filter(DatasetSchemaTemplate.dataset_geid == dataset_geid).one()
 
@@ -162,7 +197,7 @@ class APISchemaTemplate:
             result.name = request_payload.name
             result.content = request_payload.content
             result.is_draft = request_payload.is_draft
-            session.commit()
+            db.session.commit()
             api_response.result = result.to_dict()
 
             # based on the frontend infomation, create the log activity
@@ -177,6 +212,12 @@ class APISchemaTemplate:
                 )
         except NoResultFound:
             api_response.code = EAPIResponseCode.not_found
+            api_response.error_msg = "template %s is not found"%template_geid
+            db.session.rollback()
+        except Exception as e:
+            api_response.code = EAPIResponseCode.bad_request
+            api_response.error_msg = str(e)
+            db.session.rollback()
 
         return api_response.json_response()
 
@@ -191,11 +232,11 @@ class APISchemaTemplate:
 
         # delete the row if we find it
         try:
-            result = session.query(DatasetSchemaTemplate).\
+            result = db.session.query(DatasetSchemaTemplate).\
                 filter(DatasetSchemaTemplate.geid == template_geid).one()
 
-            session.delete(result)
-            session.commit()
+            db.session.delete(result)
+            db.session.commit()
             api_response.result = result.to_dict()
 
             # create the log activity
@@ -208,6 +249,11 @@ class APISchemaTemplate:
 
         except NoResultFound:
             api_response.code = EAPIResponseCode.not_found
-            return api_response.json_response()
+            api_response.error_msg = "template %s is not found"%template_geid
+            db.session.rollback()
+        except Exception as e:
+            api_response.code = EAPIResponseCode.bad_request
+            api_response.error_msg = str(e)
+            db.session.rollback()
 
         return api_response.json_response()

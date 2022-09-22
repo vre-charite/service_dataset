@@ -1,3 +1,23 @@
+# Copyright 2022 Indoc Research
+# 
+# Licensed under the EUPL, Version 1.2 or – as soon they
+# will be approved by the European Commission - subsequent
+# versions of the EUPL (the "Licence");
+# You may not use this work except in compliance with the
+# Licence.
+# You may obtain a copy of the Licence at:
+# 
+# https://joinup.ec.europa.eu/collection/eupl/eupl-text-eupl-12
+# 
+# Unless required by applicable law or agreed to in
+# writing, software distributed under the Licence is
+# distributed on an "AS IS" basis,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
+# express or implied.
+# See the Licence for the specific language governing
+# permissions and limitations under the Licence.
+# 
+
 from pydantic import BaseModel, Field
 from typing import Optional, List
 from .base_models import APIResponse, PaginationRequest
@@ -28,7 +48,7 @@ class POSTSchemaResponse(APIResponse):
             'geid': 'da2d18af-23d2-454a-b10e-34ad7bdfa26f-1629734237',
             'is_draft': 'True',
             'name': 'None',
-            'standard': 'vre_default',
+            'standard': 'default',
             'system_defined': 'True',
             'tpl_geid': '3733ba1c-9886-414c-b8f4-3b85507079c6-1629474851',
             'update_timestamp': '2021-08-23T15:57:17.417Z'

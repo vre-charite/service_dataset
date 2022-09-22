@@ -1,3 +1,23 @@
+# Copyright 2022 Indoc Research
+# 
+# Licensed under the EUPL, Version 1.2 or – as soon they
+# will be approved by the European Commission - subsequent
+# versions of the EUPL (the "Licence");
+# You may not use this work except in compliance with the
+# Licence.
+# You may obtain a copy of the Licence at:
+# 
+# https://joinup.ec.europa.eu/collection/eupl/eupl-text-eupl-12
+# 
+# Unless required by applicable law or agreed to in
+# writing, software distributed under the Licence is
+# distributed on an "AS IS" basis,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
+# express or implied.
+# See the Licence for the specific language governing
+# permissions and limitations under the Licence.
+# 
+
 from app.config import ConfigClass
 from fastapi_sqlalchemy import db
 from app.commons.logger_services.logger_factory_service import SrvLoggerFactory
@@ -202,9 +222,9 @@ class PublishVersion(object):
             os.mkdir(self.tmp_folder)
             os.mkdir(self.tmp_folder + "/data")
 
-        schemas = db.session.query(DatasetSchema).filter_by(dataset_geid=self.dataset_geid, standard="vre", is_draft=False).all()
+        schemas = db.session.query(DatasetSchema).filter_by(dataset_geid=self.dataset_geid, standard="default", is_draft=False).all()
         for schema in schemas:
-            with open(self.tmp_folder + "/vre_" + schema.name, 'w') as w:
+            with open(self.tmp_folder + "/default_" + schema.name, 'w') as w:
                 w.write(json.dumps(schema.content, indent=4, ensure_ascii=False))
         schemas = db.session.query(DatasetSchema).filter_by(dataset_geid=self.dataset_geid, standard="open_minds", is_draft=False).all()
         for schema in schemas:
