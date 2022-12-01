@@ -22,8 +22,8 @@ FROM python:3.7-buster
 ARG MINIO_USERNAME
 ARG MINIO_PASSWORD
 
-ARG pip_username
-ARG pip_password
+ARG PIP_USERNAME
+ARG PIP_PASSWORD
 
 ENV MINIO_USERNAME=$MINIO_USERNAME
 ENV MINIO_PASSWORD=$MINIO_PASSWORD
@@ -39,7 +39,7 @@ COPY kubernetes/mc /usr/local/bin
 RUN chmod +x /usr/local/bin/mc
 COPY . .
 
-RUN PIP_USERNAME=$pip_username PIP_PASSWORD=$pip_password pip install -r requirements.txt -r internal_requirements.txt && chmod +x gunicorn_starter.sh
+RUN PIP_USERNAME=$PIP_USERNAME PIP_PASSWORD=$PIP_PASSWORD pip install -r requirements.txt -r internal_requirements.txt && chmod +x gunicorn_starter.sh
 #CMD ["./gunicorn_starter.sh"]
 # TODO: remove the minio credentials from here and put kubernetes folder into dockerignore file again
 CMD ["sh", "-c", "mc alias set minio http://minio.minio:9000 $MINIO_USERNAME $MINIO_PASSWORD && ./gunicorn_starter.sh"]

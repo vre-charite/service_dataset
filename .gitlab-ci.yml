@@ -1,8 +1,9 @@
 image: docker:latest
 
 variables:
-  REGISTRY: s-hdp-vre-v007.charite.de
-  CONTAINER_IMAGE: ${REGISTRY}/dataset:${CI_COMMIT_SHORT_SHA}
+  REGISTRY: registry.bihealth.org
+  CONTAINER_IMAGE: ${REGISTRY}/vre/service_dataset:${CI_COMMIT_SHORT_SHA}
+  TARGET_RELEASE: dataset
 
 build:
   stage: build
@@ -10,7 +11,7 @@ build:
     - VRE-Deployment
   script:
     - docker login ${REGISTRY} -u ${DOCKER_USER} -p ${DOCKER_PASSWORD}
-    - docker build --build-arg http_proxy=http://proxy.charite.de:8080/ --build-arg https_proxy=http://proxy.charite.de:8080/ --build-arg MINIO_USERNAME=$MINIO_USERNAME --build-arg MINIO_PASSWORD=$MINIO_PASSWORD -t ${CONTAINER_IMAGE} .
+    - docker build --build-arg PIP_USERNAME=${DOCKER_USER} --build-arg PIP_PASSWORD=${DOCKER_PASSWORD} --build-arg http_proxy=http://proxy.charite.de:8080/ --build-arg https_proxy=http://proxy.charite.de:8080/ --build-arg MINIO_USERNAME=$MINIO_USERNAME --build-arg MINIO_PASSWORD=$MINIO_PASSWORD -t ${CONTAINER_IMAGE} .
     - docker push ${CONTAINER_IMAGE}
 
 deploy:
@@ -18,5 +19,18 @@ deploy:
   tags:
     - VRE-Deployment
   script:
-    - sed -i "s/<VERSION>/${CI_COMMIT_SHORT_SHA}/g" kubernetes/deployment.yaml
-    - kubectl apply -f kubernetes/deployment.yaml
+    - pwd
+    - cd .. && ls
+    - rm -rf vre-infra
+    - git clone https://${DOCKER_USER}:${DOCKER_PASSWORD}@git.bihealth.org/vre/vre-infra.git
+    - sed -r -i -e "s/(^${TARGET_RELEASE}_app_version\s*=\s*).*/\1\"${CI_COMMIT_SHORT_SHA}\"/" vre-infra/terraform/config/charite/charite.tfvars
+    - cat vre-infra/terraform/config/charite/charite.tfvars|grep -i ^${TARGET_RELEASE}_app_version
+    - cd vre-infra
+    - 'git config user.name ${DOCKER_USERNAME} && git config user.email "indoc-devops@indocresearch.org"'
+    - 'git config --global user.password ${DOCKER_PASSWORD}'
+    - git diff
+    - git stage terraform/config/charite/charite.tfvars
+    - git status
+    - git pull https://${DOCKER_USER}:${DOCKER_PASSWORD}@git.bihealth.org/vre/vre-infra.git HEAD:refs/heads/main
+    - 'git commit  -m "[ci skip] Terraform Deployment: ${TARGET_RELEASE} to ${CI_COMMIT_SHORT_SHA} "'
+    - git push https://${DOCKER_USER}:${DOCKER_PASSWORD}@git.bihealth.org/vre/vre-infra.git HEAD:refs/heads/main
